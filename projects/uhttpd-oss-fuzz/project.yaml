@@ -1,0 +1,14 @@
+homepage: https://openwrt.org/docs/guide-user/base-system/dhcp
+language: c
+primary_contact: steven@midlink.org
+auto_ccs:
+  - dedeckeh@gmail.com
+main_repo: https://github.com/TanushM-tob/uhttpd-oss-fuzz.git
+sanitizers:
+  - address
+  - undefined
+  - memory:
+      experimental: True
+architectures:
+  - x86_64
+  - i386 

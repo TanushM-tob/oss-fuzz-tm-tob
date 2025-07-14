@@ -1,0 +1,70 @@
+CC = clang
+CXX = clang++
+CFLAGS = -g -O1 -fno-omit-frame-pointer -fsanitize=fuzzer,address -I. -DHAVE_SHADOW -DHAVE_TLS
+LDFLAGS = -fsanitize=fuzzer,address
+
+# Source files needed for the fuzzer (excluding main.c to avoid conflicts)
+SOURCES = utils.c client.c file.c auth.c proc.c handler.c listen.c plugin.c relay.c tls.c cgi.c
+ifeq ($(HAVE_UBUS),1)
+    SOURCES += ubus.c
+    CFLAGS += -DHAVE_UBUS
+endif
+ifeq ($(HAVE_LUA),1)
+    SOURCES += lua.c
+    CFLAGS += -DHAVE_LUA
+endif
+ifeq ($(HAVE_UCODE),1)
+    SOURCES += ucode.c
+    CFLAGS += -DHAVE_UCODE
+endif
+
+# Object files
+OBJECTS = $(SOURCES:.c=.o)
+
+# Fuzzer target
+FUZZER = uhttpd-fuzz
+
+# Mock libubox functions that we need to stub out
+MOCK_SOURCES = mock_libubox.c
+
+all: $(FUZZER)
+
+# Create mock libubox functions
+mock_libubox.c:
+	echo "// Mock libubox functions for fuzzing" > $@
+	echo "#include <stdarg.h>" >> $@
+	echo "#include <string.h>" >> $@
+	echo "#include <stdlib.h>" >> $@
+	echo "#include <stdio.h>" >> $@
+	echo "void blob_buf_init(void *buf, int id) {}" >> $@
+	echo "void blob_buf_free(void *buf) {}" >> $@
+	echo "int blobmsg_add_string(void *buf, const char *name, const char *string) { return 0; }" >> $@
+	echo "char *blobmsg_data(void *attr) { static char dummy[] = \"test\"; return dummy; }" >> $@
+	echo "char *blobmsg_name(void *attr) { static char dummy[] = \"name\"; return dummy; }" >> $@
+	echo "void *blob_data(void *attr) { return attr; }" >> $@
+	echo "int blob_len(void *attr) { return 0; }" >> $@
+	echo "int blobmsg_parse(void *policy, int policy_len, void **tb, void *data, int len) { return 0; }" >> $@
+	echo "void blobmsg_for_each_attr(void *pos, void *attr, int rem) {}" >> $@
+	echo "char *blobmsg_get_string(void *attr) { static char dummy[] = \"value\"; return dummy; }" >> $@
+	echo "void uloop_timeout_cancel(void *timeout) {}" >> $@
+	echo "void uloop_timeout_set(void *timeout, int msecs) {}" >> $@
+	echo "void list_add(void *new, void *head) {}" >> $@
+	echo "void list_add_tail(void *new, void *head) {}" >> $@
+	echo "void list_del(void *entry) {}" >> $@
+	echo "int canonpath(const char *path, char *result) { if(result) strcpy(result, path); return 1; }" >> $@
+
+# Compile object files
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+mock_libubox.o: mock_libubox.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Build the fuzzer
+$(FUZZER): $(OBJECTS) mock_libubox.o uhttpd-fuzz.c
+	$(CC) $(CFLAGS) $(LDFLAGS) uhttpd-fuzz.c $(OBJECTS) mock_libubox.o -o $@
+
+clean:
+	rm -f $(OBJECTS) mock_libubox.c mock_libubox.o $(FUZZER)
+
+.PHONY: all clean 

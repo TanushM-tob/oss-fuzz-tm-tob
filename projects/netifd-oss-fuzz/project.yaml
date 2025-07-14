@@ -1,0 +1,14 @@
+homepage: https://openwrt.org/docs/techref/netifd
+language: c
+primary_contact: steven@midlink.org
+auto_ccs:
+  - dedeckeh@gmail.com
+main_repo: https://github.com/Dudcom/netifd-oss-fuzz.git
+sanitizers:
+  - address
+  - undefined
+  - memory:
+      experimental: True
+architectures:
+  - x86_64
+  - i386 
