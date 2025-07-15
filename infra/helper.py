@@ -783,12 +783,65 @@ def build_image_impl(project, cache=True, pull=False, architecture='x86_64'):
       if not _authenticate_registry():
         logger.warning('Failed to authenticate with registry. Skipping push.')
       else:
-        push_command = ['docker', 'push', image_name]
+        # For push operations, we need to use the real registry URL to bypass the cache
+        # The cache proxy intercepts ghcr.io requests but doesn't support push operations
+        real_registry_image = image_name
+        
+        # If we're using a custom registry that might be cached, ensure we push to the real registry
+        if image_name.startswith('ghcr.io/'):
+          # The image name is already correct for the real registry
+          real_registry_image = image_name
+        
+        push_command = ['docker', 'push', real_registry_image]
+        
+        # Set up environment to bypass registry cache for push operations
+        push_env = os.environ.copy()
+        
+        # If we're in a Kubernetes environment with registry caching, we need to bypass it for pushes
+        # We can do this by temporarily modifying /etc/hosts to remove the ghcr.io redirect
+        hosts_backup = None
         try:
-          subprocess.check_call(push_command)
+          # Check if we're in a cached environment (ghcr.io points to 127.0.0.1)
+          import socket
+          try:
+            ghcr_ip = socket.gethostbyname('ghcr.io')
+            if ghcr_ip == '127.0.0.1':
+              logger.info('Detected registry cache environment. Bypassing cache for push operation.')
+              # Backup current /etc/hosts
+              with open('/etc/hosts', 'r') as f:
+                hosts_backup = f.read()
+              
+              # Remove ghcr.io entry from /etc/hosts temporarily
+              hosts_lines = hosts_backup.split('\n')
+              filtered_lines = []
+              for line in hosts_lines:
+                if 'ghcr.io' not in line:
+                  filtered_lines.append(line)
+              
+              # Write modified hosts file
+              with open('/etc/hosts', 'w') as f:
+                f.write('\n'.join(filtered_lines))
+              
+              logger.info('Temporarily modified /etc/hosts to bypass registry cache for push.')
+          except (socket.gaierror, OSError):
+            # If we can't resolve ghcr.io or modify hosts, continue with normal push
+            pass
+          
+          # Attempt the push
+          subprocess.check_call(push_command, env=push_env)
           logger.info('Successfully pushed image to registry.')
+          
         except subprocess.CalledProcessError:
           logger.warning('Failed to push image to registry. Continuing with local image.')
+        finally:
+          # Restore original /etc/hosts if we modified it
+          if hosts_backup is not None:
+            try:
+              with open('/etc/hosts', 'w') as f:
+                f.write(hosts_backup)
+              logger.info('Restored original /etc/hosts file.')
+            except OSError:
+              logger.warning('Failed to restore /etc/hosts file.')
     return True
   
   build_result = docker_build(build_args)
@@ -802,12 +855,65 @@ def build_image_impl(project, cache=True, pull=False, architecture='x86_64'):
       if not _authenticate_registry():
         logger.warning('Failed to authenticate with registry. Skipping push.')
       else:
-        push_command = ['docker', 'push', image_name]
+        # For push operations, we need to use the real registry URL to bypass the cache
+        # The cache proxy intercepts ghcr.io requests but doesn't support push operations
+        real_registry_image = image_name
+        
+        # If we're using a custom registry that might be cached, ensure we push to the real registry
+        if image_name.startswith('ghcr.io/'):
+          # The image name is already correct for the real registry
+          real_registry_image = image_name
+        
+        push_command = ['docker', 'push', real_registry_image]
+        
+        # Set up environment to bypass registry cache for push operations
+        push_env = os.environ.copy()
+        
+        # If we're in a Kubernetes environment with registry caching, we need to bypass it for pushes
+        # We can do this by temporarily modifying /etc/hosts to remove the ghcr.io redirect
+        hosts_backup = None
         try:
-          subprocess.check_call(push_command)
+          # Check if we're in a cached environment (ghcr.io points to 127.0.0.1)
+          import socket
+          try:
+            ghcr_ip = socket.gethostbyname('ghcr.io')
+            if ghcr_ip == '127.0.0.1':
+              logger.info('Detected registry cache environment. Bypassing cache for push operation.')
+              # Backup current /etc/hosts
+              with open('/etc/hosts', 'r') as f:
+                hosts_backup = f.read()
+              
+              # Remove ghcr.io entry from /etc/hosts temporarily
+              hosts_lines = hosts_backup.split('\n')
+              filtered_lines = []
+              for line in hosts_lines:
+                if 'ghcr.io' not in line:
+                  filtered_lines.append(line)
+              
+              # Write modified hosts file
+              with open('/etc/hosts', 'w') as f:
+                f.write('\n'.join(filtered_lines))
+              
+              logger.info('Temporarily modified /etc/hosts to bypass registry cache for push.')
+          except (socket.gaierror, OSError):
+            # If we can't resolve ghcr.io or modify hosts, continue with normal push
+            pass
+          
+          # Attempt the push
+          subprocess.check_call(push_command, env=push_env)
           logger.info('Successfully pushed image to registry.')
+          
         except subprocess.CalledProcessError:
           logger.warning('Failed to push image to registry. Continuing with local image.')
+        finally:
+          # Restore original /etc/hosts if we modified it
+          if hosts_backup is not None:
+            try:
+              with open('/etc/hosts', 'w') as f:
+                f.write(hosts_backup)
+              logger.info('Restored original /etc/hosts file.')
+            except OSError:
+              logger.warning('Failed to restore /etc/hosts file.')
   return build_result
 
 
