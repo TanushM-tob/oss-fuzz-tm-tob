@@ -718,8 +718,31 @@ def build_image_impl(project, cache=True, pull=False, architecture='x86_64'):
   if architecture == 'aarch64':
     command = ['docker'] + build_args
     subprocess.check_call(command)
+    # Push the image to registry if it's not a base image and uses custom registry
+    project_name = image_name.split('/')[-1]
+    if not is_base_image(project_name) and not image_name.startswith('gcr.io/oss-fuzz-base/') and image_name.startswith(_get_container_registry()):
+      logger.info('Pushing image to registry: %s', image_name)
+      push_command = ['docker', 'push', image_name]
+      try:
+        subprocess.check_call(push_command)
+        logger.info('Successfully pushed image to registry.')
+      except subprocess.CalledProcessError:
+        logger.warning('Failed to push image to registry. Continuing with local image.')
     return True
-  return docker_build(build_args)
+  
+  build_result = docker_build(build_args)
+  if build_result:
+    # Push the image to registry if it's not a base image and uses custom registry
+    project_name = image_name.split('/')[-1]
+    if not is_base_image(project_name) and not image_name.startswith('gcr.io/oss-fuzz-base/') and image_name.startswith(_get_container_registry()):
+      logger.info('Pushing image to registry: %s', image_name)
+      push_command = ['docker', 'push', image_name]
+      try:
+        subprocess.check_call(push_command)
+        logger.info('Successfully pushed image to registry.')
+      except subprocess.CalledProcessError:
+        logger.warning('Failed to push image to registry. Continuing with local image.')
+  return build_result
 
 
 def _env_to_docker_args(env_list):
@@ -801,16 +824,6 @@ def docker_build(build_args):
   except subprocess.CalledProcessError:
     logger.error('Docker build failed.')
     return False
-
-  # Push the image to registry if it's not a base image and uses custom registry
-  if not is_base_image(image_name.split('/')[-1]) and not image_name.startswith('gcr.io/oss-fuzz-base/'):
-    logger.info('Pushing image to registry: %s', image_name)
-    push_command = ['docker', 'push', image_name]
-    try:
-      subprocess.check_call(push_command)
-      logger.info('Successfully pushed image to registry.')
-    except subprocess.CalledProcessError:
-      logger.warning('Failed to push image to registry. Continuing with local image.')
 
   return True
 
