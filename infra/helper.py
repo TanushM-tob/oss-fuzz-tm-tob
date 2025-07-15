@@ -751,6 +751,9 @@ def build_image_impl(project, cache=True, pull=False, architecture='x86_64'):
     return False
 
   build_args = []
+  # Force build for amd64 so image matches run platform even on arm hosts
+  if architecture == 'x86_64':
+    build_args += ['--platform', 'linux/amd64']
   if image_project == 'oss-fuzz':
     image_name = '%s/%s' % (_get_container_registry(), image_name)
   else:
