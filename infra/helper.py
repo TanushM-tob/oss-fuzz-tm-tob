@@ -802,6 +802,16 @@ def docker_build(build_args):
     logger.error('Docker build failed.')
     return False
 
+  # Push the image to registry if it's not a base image and uses custom registry
+  if not is_base_image(image_name.split('/')[-1]) and not image_name.startswith('gcr.io/oss-fuzz-base/'):
+    logger.info('Pushing image to registry: %s', image_name)
+    push_command = ['docker', 'push', image_name]
+    try:
+      subprocess.check_call(push_command)
+      logger.info('Successfully pushed image to registry.')
+    except subprocess.CalledProcessError:
+      logger.warning('Failed to push image to registry. Continuing with local image.')
+
   return True
 
 
