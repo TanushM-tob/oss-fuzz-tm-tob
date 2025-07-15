@@ -44,6 +44,62 @@ def _get_container_registry():
   return os.getenv('OSS_FUZZ_CONTAINER_ORG', 'gcr.io/oss-fuzz')
 
 
+def _authenticate_registry():
+  """Authenticate with the container registry using available environment variables."""
+  registry_url = _get_container_registry()
+  
+  # Skip authentication for default gcr.io/oss-fuzz
+  if registry_url == 'gcr.io/oss-fuzz':
+    return True
+    
+  # Try GHCR_AUTH first (base64 encoded username:password)
+  ghcr_auth = os.getenv('GHCR_AUTH')
+  if ghcr_auth:
+    try:
+      import base64
+      decoded = base64.b64decode(ghcr_auth).decode('utf-8').strip()
+      if ':' in decoded:
+        username, password = decoded.split(':', 1)
+        registry_host = registry_url.split('/')[0]  # Extract registry host
+        logger.info('Authenticating with %s using GHCR_AUTH', registry_host)
+        
+        # Use docker login
+        login_command = ['docker', 'login', registry_host, '-u', username, '--password-stdin']
+        process = subprocess.Popen(login_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = process.communicate(input=password.encode())
+        
+        if process.returncode == 0:
+          logger.info('Successfully authenticated with %s', registry_host)
+          return True
+        else:
+          logger.warning('Failed to authenticate with %s: %s', registry_host, stderr.decode())
+    except Exception as e:
+      logger.warning('Failed to decode GHCR_AUTH: %s', e)
+  
+  # Try DOCKER_USERNAME and DOCKER_PAT
+  docker_username = os.getenv('DOCKER_USERNAME')
+  docker_pat = os.getenv('DOCKER_PAT')
+  if docker_username and docker_pat:
+    try:
+      registry_host = registry_url.split('/')[0]  # Extract registry host
+      logger.info('Authenticating with %s using DOCKER_USERNAME/DOCKER_PAT', registry_host)
+      
+      login_command = ['docker', 'login', registry_host, '-u', docker_username, '--password-stdin']
+      process = subprocess.Popen(login_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+      stdout, stderr = process.communicate(input=docker_pat.encode())
+      
+      if process.returncode == 0:
+        logger.info('Successfully authenticated with %s', registry_host)
+        return True
+      else:
+        logger.warning('Failed to authenticate with %s: %s', registry_host, stderr.decode())
+    except Exception as e:
+      logger.warning('Failed to authenticate with DOCKER_USERNAME/DOCKER_PAT: %s', e)
+  
+  logger.warning('No authentication credentials found for %s', registry_url)
+  return False
+
+
 def _get_base_runner_image():
   """Returns the base runner image with the correct registry."""
   return 'gcr.io/oss-fuzz-base/base-runner'
@@ -722,12 +778,17 @@ def build_image_impl(project, cache=True, pull=False, architecture='x86_64'):
     project_name = image_name.split('/')[-1]
     if not is_base_image(project_name) and not image_name.startswith('gcr.io/oss-fuzz-base/') and image_name.startswith(_get_container_registry()):
       logger.info('Pushing image to registry: %s', image_name)
-      push_command = ['docker', 'push', image_name]
-      try:
-        subprocess.check_call(push_command)
-        logger.info('Successfully pushed image to registry.')
-      except subprocess.CalledProcessError:
-        logger.warning('Failed to push image to registry. Continuing with local image.')
+      
+      # Authenticate with registry before pushing
+      if not _authenticate_registry():
+        logger.warning('Failed to authenticate with registry. Skipping push.')
+      else:
+        push_command = ['docker', 'push', image_name]
+        try:
+          subprocess.check_call(push_command)
+          logger.info('Successfully pushed image to registry.')
+        except subprocess.CalledProcessError:
+          logger.warning('Failed to push image to registry. Continuing with local image.')
     return True
   
   build_result = docker_build(build_args)
@@ -736,12 +797,17 @@ def build_image_impl(project, cache=True, pull=False, architecture='x86_64'):
     project_name = image_name.split('/')[-1]
     if not is_base_image(project_name) and not image_name.startswith('gcr.io/oss-fuzz-base/') and image_name.startswith(_get_container_registry()):
       logger.info('Pushing image to registry: %s', image_name)
-      push_command = ['docker', 'push', image_name]
-      try:
-        subprocess.check_call(push_command)
-        logger.info('Successfully pushed image to registry.')
-      except subprocess.CalledProcessError:
-        logger.warning('Failed to push image to registry. Continuing with local image.')
+      
+      # Authenticate with registry before pushing
+      if not _authenticate_registry():
+        logger.warning('Failed to authenticate with registry. Skipping push.')
+      else:
+        push_command = ['docker', 'push', image_name]
+        try:
+          subprocess.check_call(push_command)
+          logger.info('Successfully pushed image to registry.')
+        except subprocess.CalledProcessError:
+          logger.warning('Failed to push image to registry. Continuing with local image.')
   return build_result
 
 
