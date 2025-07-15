@@ -38,7 +38,18 @@ import templates
 OSS_FUZZ_DIR = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 BUILD_DIR = os.path.join(OSS_FUZZ_DIR, 'build')
 
-BASE_RUNNER_IMAGE = 'gcr.io/oss-fuzz-base/base-runner'
+
+def _get_container_registry():
+  """Returns the container registry to use, checking environment variable first."""
+  return os.getenv('OSS_FUZZ_CONTAINER_ORG', 'gcr.io/oss-fuzz')
+
+
+def _get_base_runner_image():
+  """Returns the base runner image with the correct registry."""
+  return 'gcr.io/oss-fuzz-base/base-runner'
+
+
+BASE_RUNNER_IMAGE = _get_base_runner_image()
 
 BASE_IMAGES = {
     'generic': [
@@ -684,7 +695,10 @@ def build_image_impl(project, cache=True, pull=False, architecture='x86_64'):
     return False
 
   build_args = []
-  image_name = 'gcr.io/%s/%s' % (image_project, image_name)
+  if image_project == 'oss-fuzz':
+    image_name = '%s/%s' % (_get_container_registry(), image_name)
+  else:
+    image_name = 'gcr.io/%s/%s' % (image_project, image_name)
   if architecture == 'aarch64':
     build_args += [
         'buildx',
@@ -856,7 +870,7 @@ def build_fuzzers_impl(  # pylint: disable=too-many-arguments,too-many-locals,to
 
     # Clean old and possibly conflicting artifacts in project's out directory.
     docker_run([
-        '-v', f'{project_out}:/out', '-t', f'gcr.io/oss-fuzz/{project.name}',
+        '-v', f'{project_out}:/out', '-t', f'{_get_container_registry()}/{project.name}',
         '/bin/bash', '-c', 'rm -rf /out/*'
     ],
                architecture=architecture)
@@ -864,7 +878,7 @@ def build_fuzzers_impl(  # pylint: disable=too-many-arguments,too-many-locals,to
     docker_run([
         '-v',
         '%s:/work' % project.work, '-t',
-        'gcr.io/oss-fuzz/%s' % project.name, '/bin/bash', '-c', 'rm -rf /work/*'
+        f'{_get_container_registry()}/{project.name}', '/bin/bash', '-c', 'rm -rf /work/*'
     ],
                architecture=architecture)
 
@@ -906,7 +920,7 @@ def build_fuzzers_impl(  # pylint: disable=too-many-arguments,too-many-locals,to
 
   command += [
       '-v', f'{project_out}:/out', '-v', f'{project.work}:/work',
-      f'gcr.io/oss-fuzz/{project.name}'
+      f'{_get_container_registry()}/{project.name}'
   ]
   if sys.stdin.isatty():
     command.insert(-1, '-t')
@@ -1026,7 +1040,7 @@ def fuzzbench_build_fuzzers(args):
         f'FUZZBENCH_PATH={fuzzbench_path}', 'OSS_FUZZ_ON_DEMAND=1',
         f'PROJECT={args.project.name}'
     ]
-    tag = f'gcr.io/oss-fuzz/{args.project.name}'
+    tag = f'{_get_container_registry()}/{args.project.name}'
     subprocess.run([
         'docker', 'tag', 'gcr.io/oss-fuzz-base/base-builder-fuzzbench',
         'gcr.io/oss-fuzz-base/base-builder'
@@ -1524,7 +1538,7 @@ def fuzzbench_run_fuzzer(args):
         f'{fuzzbench_path}:{fuzzbench_path}',
         '-e',
         f'FUZZBENCH_PATH={fuzzbench_path}',
-        f'gcr.io/oss-fuzz/{args.project.name}',
+        f'{_get_container_registry()}/{args.project.name}',
         'fuzzbench_run_fuzzer',
         args.fuzzer_name,
     ] + args.fuzzer_args)
@@ -1551,7 +1565,7 @@ def fuzzbench_measure(args):
         f'FUZZBENCH_PATH={fuzzbench_path}', '-e', 'EXPERIMENT_TYPE=bug', '-e',
         f'FUZZ_TARGET={args.fuzz_target_name}', '-e',
         f'FUZZER={args.engine_name}', '-e', f'BENCHMARK={args.project.name}',
-        f'gcr.io/oss-fuzz/{args.project.name}', 'fuzzbench_measure'
+        f'{_get_container_registry()}/{args.project.name}', 'fuzzbench_measure'
     ]
 
     return docker_run(run_args, 'x86_64')
@@ -1708,7 +1722,7 @@ def index(args):
   if not args.project.is_external and not check_project_exists(args.project):
     return False
 
-  image_name = f'gcr.io/oss-fuzz/{args.project.name}'
+  image_name = f'{_get_container_registry()}/{args.project.name}'
   if not build_image_impl(
       args.project, cache=True, pull=False, architecture=args.architecture):
     logger.error('Failed to build project image for indexer.')
@@ -1804,7 +1818,7 @@ def shell(args):
       '-v',
       '%s:/out' % out_dir, '-v',
       '%s:/work' % args.project.work, '-t',
-      'gcr.io/%s/%s' % (image_project, args.project.name), '/bin/bash'
+      'gcr.io/%s/%s' % (image_project, args.project.name) if image_project == 'oss-fuzz-base' else f'{_get_container_registry()}/{args.project.name}', '/bin/bash'
   ])
 
   docker_run(run_args, architecture=args.architecture)
