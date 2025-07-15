@@ -65,9 +65,9 @@ export CFLAGS="$CFLAGS -I$DEPS_DIR/install/include/libnl-tiny"
 export LDFLAGS="$LDFLAGS -L$DEPS_DIR/install/lib"
 export CFLAGS="$CFLAGS -D_GNU_SOURCE -DDHCPV4_SUPPORT -DWITH_UBUS -std=gnu99"
 
-# Go back to the project’s source root (parent of deps directory).
-PROJECT_ROOT="$(dirname "$PWD")"
-cd "$PROJECT_ROOT"
+# Move into the project’s original source directory that sits alongside
+# the dependencies directory.
+cd "$DEPS_DIR/../src"
 for f in odhcpd.c config.c router.c dhcpv6.c ndp.c dhcpv6-ia.c dhcpv6-pxe.c netlink.c dhcpv4.c ubus.c; do
   $CC $CFLAGS -c "$f" -o "${f%.c}.o"
 done
