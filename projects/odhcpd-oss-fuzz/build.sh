@@ -90,7 +90,7 @@ for f in odhcpd.c config.c router.c dhcpv6.c ndp.c dhcpv6-ia.c dhcpv6-pxe.c netl
 done
 $CC $CFLAGS -c "$FUZZER_FILE" -o fuzz_odhcpd.o
 
-$LINK_FLAGS=""
+LINK_FLAGS=""
 if [ -n "${LIB_FUZZING_ENGINE}" ]; then
   LINK_FLAGS="${LIB_FUZZING_ENGINE}"
 fi
