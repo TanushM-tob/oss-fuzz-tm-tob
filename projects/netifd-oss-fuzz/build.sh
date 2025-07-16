@@ -150,6 +150,30 @@ $CC $CFLAGS -I"$DEPS_DIR/install/include" -I"$DEPS_DIR/.." -c "$DEPS_DIR/main_wr
 
 cd ..
 
+echo "Checking directory structure..."
+ls -la "$SRC/oss-fuzz-auto"
+
+# Check for git repository structure with commit hash directory
+REPO_DIR=$(find "$SRC/oss-fuzz-auto" -maxdepth 1 -name "netifd-oss-fuzz-*" -type d | head -n1)
+if [ -n "$REPO_DIR" ] && [ -d "$REPO_DIR" ]; then
+  echo "Found git repository structure with commit hash, using $REPO_DIR"
+  cd "$REPO_DIR"
+  SOURCE_DIR="$REPO_DIR"
+elif [ -f "$SRC/oss-fuzz-auto/netifd_fuzz.c" ]; then
+  echo "Found source files in mounted structure"
+  cd "$SRC/oss-fuzz-auto"
+  SOURCE_DIR="$SRC/oss-fuzz-auto"
+else
+  echo "Using default structure"
+  cd "$SRC/oss-fuzz-auto"
+  SOURCE_DIR="$SRC/oss-fuzz-auto"
+fi
+
+echo "Using source directory: $SOURCE_DIR"
+echo "Current working directory: $(pwd)"
+echo "Available files:"
+ls -la
+
 # Make target functions non-static by editing source files directly
 echo "Making target functions non-static for fuzzing..."
 sed -i 's/static void config_parse_route(/void config_parse_route(/g' config.c
