@@ -58,8 +58,32 @@ find /usr/lib* /lib* -name "libjson-c.so*" -exec cp {} "$OUT/lib/" \; 2>/dev/nul
 # Find and copy libcrypt
 find /usr/lib* /lib* -name "libcrypt.so*" -exec cp {} "$OUT/lib/" \; 2>/dev/null || true
 
-# Return to source directory
+# Return to source directory and find the correct source structure
 cd ..
+
+echo "Checking directory structure..."
+ls -la "$SRC/oss-fuzz-auto"
+
+# Check for git repository structure with commit hash directory
+REPO_DIR=$(find "$SRC/oss-fuzz-auto" -maxdepth 1 -name "uhttpd-oss-fuzz-*" -type d | head -n1)
+if [ -n "$REPO_DIR" ] && [ -d "$REPO_DIR" ]; then
+  echo "Found git repository structure with commit hash, using $REPO_DIR"
+  cd "$REPO_DIR"
+  SOURCE_DIR="$REPO_DIR"
+elif [ -f "$SRC/oss-fuzz-auto/uhttpd-fuzz.c" ]; then
+  echo "Found source files in mounted structure"
+  cd "$SRC/oss-fuzz-auto"
+  SOURCE_DIR="$SRC/oss-fuzz-auto"
+else
+  echo "Using default structure"
+  cd "$SRC/oss-fuzz-auto"
+  SOURCE_DIR="$SRC/oss-fuzz-auto"
+fi
+
+echo "Using source directory: $SOURCE_DIR"
+echo "Current working directory: $(pwd)"
+echo "Available files:"
+ls -la
 
 # Remove static declarations from functions we want to fuzz
 echo "Making fuzzing target functions non-static..."
