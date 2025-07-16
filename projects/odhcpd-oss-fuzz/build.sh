@@ -67,11 +67,11 @@ export CFLAGS="$CFLAGS -D_GNU_SOURCE -DDHCPV4_SUPPORT -DWITH_UBUS -std=gnu99"
 
 # The project’s source was copied to $SRC/oss-fuzz-auto during the Docker
 # build (see Dockerfile).  Build the object files there.
-cd "$SRC/oss-fuzz-auto/src"
+cd "$SRC/oss-fuzz-auto"
 for f in odhcpd.c config.c router.c dhcpv6.c ndp.c dhcpv6-ia.c dhcpv6-pxe.c netlink.c dhcpv4.c ubus.c; do
   $CC $CFLAGS -c "$f" -o "${f%.c}.o"
 done
-$CC $CFLAGS -c "$SRC/oss-fuzz-auto/fuzz_odhcpd.c" -o fuzz_odhcpd.o
+$CC $CFLAGS -c "fuzz_odhcpd.c" -o fuzz_odhcpd.o
 
 $LINK_FLAGS=""
 if [ -n "${LIB_FUZZING_ENGINE}" ]; then
