@@ -67,12 +67,28 @@ export CFLAGS="$CFLAGS -D_GNU_SOURCE -DDHCPV4_SUPPORT -DWITH_UBUS -std=gnu99"
 
 # The project’s source was copied to $SRC/oss-fuzz-auto during the Docker
 # build (see Dockerfile).  Build the object files there.
-cd "$SRC/oss-fuzz-auto"
-ls -la
+echo "Checking directory structure..."
+ls -la "$SRC/oss-fuzz-auto"
+
+# Check for git repository structure with commit hash directory
+REPO_DIR=$(find "$SRC/oss-fuzz-auto" -maxdepth 1 -name "odhcpd-oss-fuzz-*" -type d | head -n1)
+if [ -n "$REPO_DIR" ] && [ -d "$REPO_DIR/src" ]; then
+  echo "Found git repository structure with commit hash, using $REPO_DIR/src"
+  cd "$REPO_DIR/src"
+  FUZZER_FILE="$REPO_DIR/fuzz_odhcpd.c"
+elif [ -d "$SRC/oss-fuzz-auto/src" ]; then
+  echo "Found src/ subdirectory, using original structure"
+  cd "$SRC/oss-fuzz-auto/src"
+  FUZZER_FILE="../fuzz_odhcpd.c"
+else
+  echo "No src/ subdirectory, using mounted structure"
+  cd "$SRC/oss-fuzz-auto"
+  FUZZER_FILE="fuzz_odhcpd.c"
+fi
 for f in odhcpd.c config.c router.c dhcpv6.c ndp.c dhcpv6-ia.c dhcpv6-pxe.c netlink.c dhcpv4.c ubus.c; do
   $CC $CFLAGS -c "$f" -o "${f%.c}.o"
 done
-$CC $CFLAGS -c "fuzz_odhcpd.c" -o fuzz_odhcpd.o
+$CC $CFLAGS -c "$FUZZER_FILE" -o fuzz_odhcpd.o
 
 $LINK_FLAGS=""
 if [ -n "${LIB_FUZZING_ENGINE}" ]; then
