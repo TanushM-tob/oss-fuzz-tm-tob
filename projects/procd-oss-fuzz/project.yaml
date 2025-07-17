@@ -7,8 +7,6 @@ main_repo: https://github.com/Dudcom/procd-oss-fuzz.git
 sanitizers:
   - address
   - undefined
-  - memory:
-      experimental: True
 architectures:
   - x86_64
   - i386 
