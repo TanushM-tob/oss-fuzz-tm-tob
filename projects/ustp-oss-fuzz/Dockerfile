@@ -1,5 +1,5 @@
 FROM gcr.io/oss-fuzz-base/base-builder
-RUN mkdir $SRC/ustp-fuzz
+RUN mkdir $SRC/oss-fuzz-auto
 COPY build.sh $SRC/
-COPY . $SRC/ustp-fuzz/
-WORKDIR $SRC/ustp-fuzz
+COPY . $SRC/oss-fuzz-auto/
+WORKDIR $SRC/oss-fuzz-auto
