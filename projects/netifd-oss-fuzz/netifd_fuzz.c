@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <limits.h>
+
 #include "netifd.h"
 #include "interface.h"
 #include "interface-ip.h"
@@ -16,521 +17,399 @@
 #include "config.h"
 #include "device.h"
 #include "system.h"
-#include "extdev.h"
+
 #include <uci.h>
 #include <libubox/blobmsg.h>
 #include <libubox/blobmsg_json.h>
 #include <libubox/blob.h>
 
-extern int blobmsg_add_u8(struct blob_buf *buf, const char *name, uint8_t val);
-extern int blobmsg_add_u32(struct blob_buf *buf, const char *name, uint32_t val);
-extern int blobmsg_add_string(struct blob_buf *buf, const char *name, const char *str);
-extern void *blobmsg_open_array(struct blob_buf *buf, const char *name);
-extern void blobmsg_close_array(struct blob_buf *buf, void *cookie);
-extern void *blob_data(const struct blob_attr *attr);
-
-struct extdev_type {
-    struct device_type handler;
-    const char *name;
-    uint32_t peer_id;
-    struct ubus_subscriber ubus_sub;
-    bool subscribed;
-    struct ubus_event_handler obj_wait;
-    struct uci_blob_param_list *config_params;
-    char *config_strbuf;
-    struct uci_blob_param_list *info_params;
-    char *info_strbuf;
-    struct uci_blob_param_list *stats_params;
-    char *stats_strbuf;
-};
-
-struct extdev_device {
-    struct device dev;
-    struct extdev_type *etype;
-    const char *dep_name;
-    struct uloop_timeout retry;
-};
-
-struct extdev_bridge {
-    struct extdev_device edev;
-    device_state_cb set_state;
-    struct blob_attr *config;
-    bool empty;
-    struct blob_attr *ifnames;
-    bool active;
-    bool force_active;
-    struct uloop_timeout retry;
-    struct vlist_tree members;
-    int n_present;
-    int n_failed;
-};
-
-struct extdev_bridge_member {
-    struct vlist_node node;
-    struct extdev_bridge *parent_br;
-    struct device_user dev_usr;
-    bool present;
-    char *name;
-};
-
+// External functions we need to fuzz
+extern void config_parse_interface(struct uci_section *s, bool alias);
 extern void config_parse_route(struct uci_section *s, bool v6);
 extern void interface_ip_add_route(struct interface *iface, struct blob_attr *attr, bool v6);
-extern void iprule_add(struct blob_attr *attr, bool v6);
-extern void config_parse_interface(struct uci_section *s, bool alias);
-extern enum dev_change_type __bridge_reload(struct extdev_bridge *ebr, struct blob_attr *config);
 
-static struct blob_attr *create_blob_from_fuzz_data(const uint8_t *data, size_t size);
-static void fuzz_bonding_create(const uint8_t *data, size_t size);
+// Global fuzzing state
+static bool g_fuzzing_initialized = false;
+static struct uci_context *fuzz_uci_ctx = NULL;
+static struct uci_package *fuzz_uci_pkg = NULL;
 
-static struct interface *create_fuzzed_interface(const uint8_t *data, size_t size, size_t *offset);
-static struct uci_section *create_fuzzed_uci_section(const uint8_t *data, size_t size, size_t *offset);
-static struct extdev_bridge *create_fuzzed_bridge(const uint8_t *data, size_t size, size_t *offset);
-
-static bool g_fuzzing_mode = false;
-
-static void init_netifd_for_fuzzing(void) {
-    static bool initialized = false;
-    if (initialized) return;
+// Initialize minimal netifd environment for fuzzing
+static void init_fuzzing_environment(void) {
+    if (g_fuzzing_initialized) return;
     
-    g_fuzzing_mode = true;
+    // Initialize interfaces list
+    extern struct vlist_tree interfaces;
+    extern void interface_update(struct vlist_tree *tree, struct vlist_node *node_new, struct vlist_node *node_old);
+    vlist_init(&interfaces, avl_strcmp, interface_update);
+    interfaces.keep_old = true;
+    interfaces.no_delete = true;
     
-    extern int netifd_ubus_init(const char *path);
-    netifd_ubus_init("/tmp/dummy_ubus_socket");
-    
+    // Initialize minimal ubus context
     extern struct ubus_context *ubus_ctx;
     if (!ubus_ctx) {
         ubus_ctx = calloc(1, sizeof(struct ubus_context));
         if (ubus_ctx) {
             ubus_ctx->sock.fd = -1;
-            ubus_ctx->local_id = 0xffffffff;
-            
             INIT_LIST_HEAD(&ubus_ctx->pending);
             INIT_LIST_HEAD(&ubus_ctx->requests);
         }
     }
-
-    extern void bonding_device_type_init(void);
-    bonding_device_type_init();
     
-    initialized = true;
+    g_fuzzing_initialized = true;
 }
 
-static struct blob_attr *create_valid_blob_attr(const uint8_t *data, size_t size) {
+// Create a UCI section from fuzz data  
+static struct uci_section *create_uci_section_from_fuzz(const uint8_t *data, size_t size, const char *type, const char *name) {
     if (size < 4) return NULL;
     
-    static struct blob_buf attr_buf;
-    blob_buf_init(&attr_buf, 0);
+    // Create UCI context if needed
+    if (!fuzz_uci_ctx) {
+        fuzz_uci_ctx = uci_alloc_context();
+        if (!fuzz_uci_ctx) return NULL;
+    }
+    
+    // Create package if needed
+    if (!fuzz_uci_pkg) {
+        fuzz_uci_pkg = calloc(1, sizeof(struct uci_package));
+        if (!fuzz_uci_pkg) return NULL;
+        fuzz_uci_pkg->ctx = fuzz_uci_ctx;
+        fuzz_uci_pkg->e.name = strdup("network");
+        INIT_LIST_HEAD(&fuzz_uci_pkg->sections);
+    }
+    
+    struct uci_section *section = NULL;
+    int ret = uci_add_section(fuzz_uci_ctx, fuzz_uci_pkg, type, &section);
+    if (ret != UCI_OK || !section) return NULL;
+    
+    // Set section name if provided
+    if (name) {
+        if (section->e.name) free((void*)section->e.name);
+        section->e.name = strdup(name);
+    }
+    
+    // Add some fuzzed options based on input data
+    size_t offset = 0;
+    while (offset + 4 < size) {
+        uint8_t option_type = data[offset] % 10;
+        offset++;
+        
+        const char *option_name = NULL;
+        const char *option_value = NULL;
+        
+        switch (option_type) {
+            case 0:
+                option_name = "proto";
+                option_value = (data[offset] % 2) ? "static" : "dhcp";
+                break;
+            case 1:
+                option_name = "ipaddr";
+                option_value = "192.168.1.1";
+                break;
+            case 2:
+                option_name = "netmask";
+                option_value = "255.255.255.0";
+                break;
+            case 3:
+                option_name = "gateway";
+                option_value = "192.168.1.254";
+                break;
+            case 4:
+                option_name = "dns";
+                option_value = "8.8.8.8";
+                break;
+            case 5:
+                option_name = "metric";
+                option_value = (data[offset] % 2) ? "100" : "200";
+                break;
+            case 6:
+                option_name = "interface";
+                option_value = "lan";
+                break;
+            case 7:
+                option_name = "target";
+                option_value = "0.0.0.0/0";
+                break;
+            case 8:
+                option_name = "type";
+                option_value = "bridge";
+                break;
+            case 9:
+                option_name = "ports";
+                option_value = "eth0 eth1";
+                break;
+        }
+        
+        if (option_name && option_value) {
+            struct uci_ptr ptr = {
+                .p = fuzz_uci_pkg,
+                .s = section,
+                .option = option_name,
+                .value = option_value,
+            };
+            uci_set(fuzz_uci_ctx, &ptr);
+        }
+        
+        offset++;
+        if (offset >= size) break;
+    }
+    
+    return section;
+}
+
+// Create a blob attribute from fuzz data for testing blob parsing
+static struct blob_attr *create_blob_from_fuzz(const uint8_t *data, size_t size) {
+    if (size < 8) return NULL;
+    
+    static struct blob_buf buf;
+    static bool buf_initialized = false;
+    
+    if (buf_initialized) {
+        blob_buf_free(&buf);
+    }
+    blob_buf_init(&buf, 0);
+    buf_initialized = true;
     
     size_t offset = 0;
-    while (offset < size && offset < 64) {
+    
+    // Add various blob fields based on fuzz data
+    while (offset + 4 < size) {
         uint8_t field_type = data[offset] % 8;
         offset++;
         
         switch (field_type) {
-            case 0:
-                if (offset < size) {
-                    char key[16], value[32];
-                    snprintf(key, sizeof(key), "key%d", data[offset] % 10);
-                    snprintf(value, sizeof(value), "value%d", data[offset] % 100);
-                    blobmsg_add_string(&attr_buf, key, value);
-                    offset++;
-                }
-                break;
-            case 1: // U32 field
+            case 0: // String field
                 if (offset + 4 <= size) {
-                    uint32_t val;
-                    memcpy(&val, data + offset, sizeof(uint32_t));
-                    char key[16];
-                    snprintf(key, sizeof(key), "num%d", val % 10);
-                    blobmsg_add_u32(&attr_buf, key, val % 10000);
+                    uint32_t str_selector = data[offset] % 10;
+                    const char *strings[] = {
+                        "192.168.1.1", "eth0", "lan", "dhcp", "static",
+                        "bridge", "8.8.8.8", "255.255.255.0", "0.0.0.0", "wan"
+                    };
+                    blobmsg_add_string(&buf, "value", strings[str_selector]);
                     offset += 4;
                 }
                 break;
-            case 2: // IP address
-                blobmsg_add_string(&attr_buf, "ipaddr", "192.168.1.1");
-                break;
-            case 3: // Gateway
-                blobmsg_add_string(&attr_buf, "gateway", "192.168.1.254");
-                break;
-            case 4: // Interface name
-                blobmsg_add_string(&attr_buf, "interface", "eth0");
-                break;
-            case 5: // Metric
-                if (offset + 2 <= size) {
-                    uint16_t metric;
-                    memcpy(&metric, data + offset, sizeof(uint16_t));
-                    blobmsg_add_u32(&attr_buf, "metric", metric % 1000);
-                    offset += 2;
+                
+            case 1: // Integer field
+                if (offset + 4 <= size) {
+                    uint32_t val;
+                    memcpy(&val, data + offset, 4);
+                    blobmsg_add_u32(&buf, "metric", val % 1000);
+                    offset += 4;
                 }
                 break;
-            default:
+                
+            case 2: // IP address
+                blobmsg_add_string(&buf, "ipaddr", "192.168.1.1");
+                break;
+                
+            case 3: // Gateway
+                blobmsg_add_string(&buf, "gateway", "192.168.1.254");
+                break;
+                
+            case 4: // Interface
+                blobmsg_add_string(&buf, "interface", "lan");
+                break;
+                
+            case 5: // Route target
+                blobmsg_add_string(&buf, "target", "0.0.0.0/0");
+                break;
+                
+            case 6: // Boolean
+                blobmsg_add_u8(&buf, "enabled", data[offset] & 1);
                 offset++;
+                break;
+                
+            case 7: // Array of strings
+                {
+                    void *array = blobmsg_open_array(&buf, "list");
+                    blobmsg_add_string(&buf, NULL, "eth0");
+                    blobmsg_add_string(&buf, NULL, "eth1");
+                    blobmsg_close_array(&buf, array);
+                }
+                break;
+        }
+        
+        if (offset >= size) break;
+    }
+    
+    return blob_data(buf.head);
+}
+
+// Fuzz UCI configuration parsing
+static void fuzz_uci_config_parsing(const uint8_t *data, size_t size) {
+    if (size < 8) return;
+    
+    uint8_t config_type = data[0] % 4;
+    const uint8_t *config_data = data + 1;
+    size_t config_size = size - 1;
+    
+    struct uci_section *section = NULL;
+    
+    switch (config_type) {
+        case 0: // Interface config
+            section = create_uci_section_from_fuzz(config_data, config_size, "interface", "lan");
+            if (section) {
+                bool alias = (config_data[0] % 2) == 1;
+                config_parse_interface(section, alias);
+            }
+            break;
+            
+        case 1: // Route config
+            section = create_uci_section_from_fuzz(config_data, config_size, "route", "default");
+            if (section) {
+                bool v6 = (config_data[0] % 2) == 1;
+                config_parse_route(section, v6);
+            }
+            break;
+            
+                 case 2: // Second interface config (alternative to case 0)
+             section = create_uci_section_from_fuzz(config_data, config_size, "interface", "wan");
+             if (section) {
+                 bool alias = (config_data[0] % 2) == 1;
+                 config_parse_interface(section, alias);
+             }
+             break;
+            
+        case 3: // Interface route addition via blob
+            {
+                struct blob_attr *attr = create_blob_from_fuzz(config_data, config_size);
+                if (attr) {
+                    // Create a minimal interface for testing
+                    struct interface *iface = calloc(1, sizeof(struct interface));
+                    if (iface) {
+                        iface->name = strdup("test_iface");
+                        INIT_LIST_HEAD(&iface->errors);
+                        
+                        // Initialize interface IP structure
+                        extern void interface_ip_init(struct interface *iface);
+                        interface_ip_init(iface);
+                        
+                        bool v6 = (config_data[0] % 2) == 1;
+                        interface_ip_add_route(iface, attr, v6);
+                        
+                        // Cleanup
+                        if (iface->name) free((void*)iface->name);
+                        free(iface);
+                    }
+                }
+            }
+            break;
+    }
+    
+         // Note: UCI manages memory internally, we don't need to manually free sections/options
+     // when they're created through uci_add_section/uci_set. They'll be freed when
+     // the package/context is freed in the destructor.
+}
+
+// Simple blob message parsing fuzzer
+static void fuzz_blob_parsing(const uint8_t *data, size_t size) {
+    if (size < 16) return;
+    
+    // Try to parse the raw fuzz data as a blob message
+    struct blob_attr *attr = (struct blob_attr *)data;
+    
+    // Basic sanity check on blob header
+    if (blob_len(attr) > size - sizeof(struct blob_attr)) return;
+    if (blob_len(attr) == 0) return;
+    
+    // Try to parse it as a blobmsg
+    if (blobmsg_check_attr(attr, false)) {
+        // Parse as different message types
+        uint8_t parse_type = data[size-1] % 3;
+        
+        switch (parse_type) {
+            case 0: // Parse as route config
+                {
+                    bool v6 = (data[size-2] % 2) == 1;
+                    // Create a minimal interface
+                    struct interface *iface = calloc(1, sizeof(struct interface));
+                    if (iface) {
+                        iface->name = strdup("blob_test");
+                        INIT_LIST_HEAD(&iface->errors);
+                        extern void interface_ip_init(struct interface *iface);
+                        interface_ip_init(iface);
+                        
+                        interface_ip_add_route(iface, attr, v6);
+                        
+                        if (iface->name) free((void*)iface->name);
+                        free(iface);
+                    }
+                }
+                break;
+                
+            case 1: // Parse as JSON and convert back
+                {
+                    char *json_str = blobmsg_format_json(attr, true);
+                    if (json_str) {
+                        // Try to parse it back
+                        static struct blob_buf parse_buf;
+                        blob_buf_init(&parse_buf, 0);
+                        blobmsg_add_json_from_string(&parse_buf, json_str);
+                        blob_buf_free(&parse_buf);
+                        free(json_str);
+                    }
+                }
+                break;
+                
+            case 2: // Just iterate through the blob
+                {
+                    struct blob_attr *cur;
+                    int rem;
+                    blobmsg_for_each_attr(cur, attr, rem) {
+                        // Just access the data to trigger any parsing issues
+                        if (blobmsg_type(cur) == BLOBMSG_TYPE_STRING) {
+                            blobmsg_get_string(cur);
+                        } else if (blobmsg_type(cur) == BLOBMSG_TYPE_INT32) {
+                            blobmsg_get_u32(cur);
+                        }
+                    }
+                }
                 break;
         }
     }
-    
-    return blob_data(attr_buf.head);
 }
 
-static void add_uci_options_from_fuzz(struct uci_section *section, const uint8_t *data, size_t size) {
-    if (size < 4) return;
+// Main fuzzer entry point
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    init_fuzzing_environment();
     
-    (void)data; // Suppress unused parameter warning
-    (void)size;
+    if (size < 4) return 0;
     
-}
-
-static void fuzz_with_reduced_requirements(const uint8_t *data, size_t size) {
-    if (size < 4) return;
-    
-    uint8_t strategy = data[0] % 10; // More strategies
+    // Choose fuzzing strategy based on first byte
+    uint8_t strategy = data[0] % 3;
     const uint8_t *fuzz_data = data + 1;
     size_t fuzz_size = size - 1;
     
     switch (strategy) {
         case 0:
-        case 1: {
-            if (fuzz_size >= 8) {
-                size_t offset = 0;
-                struct uci_section *section = create_fuzzed_uci_section(fuzz_data, fuzz_size, &offset);
-                if (section) {
-                    section->type = "route";
-                    add_uci_options_from_fuzz(section, fuzz_data + offset, fuzz_size - offset);
-                    bool v6 = (fuzz_data[0] % 2) == 1;
-                    config_parse_route(section, v6);
-                    free(section);
-                }
-            }
+            fuzz_uci_config_parsing(fuzz_data, fuzz_size);
             break;
-        }
-        case 2:
-        case 3: {
-            if (fuzz_size >= 8) {
-                size_t offset = 0;
-                struct uci_section *section = create_fuzzed_uci_section(fuzz_data, fuzz_size, &offset);
-                if (section) {
-                    section->type = "interface";
-                    add_uci_options_from_fuzz(section, fuzz_data + offset, fuzz_size - offset);
-                    bool alias = (fuzz_data[0] % 2) == 1;
-                    config_parse_interface(section, alias);
-                    free(section);
-                }
-            }
-            break;
-        }
-        case 4:
-        case 5: {
-            if (fuzz_size >= 8) {
-                size_t offset = 0;
-                struct interface *iface = create_fuzzed_interface(fuzz_data, fuzz_size, &offset);
-                if (iface) {
-                    struct blob_attr *attr = create_valid_blob_attr(fuzz_data + offset, fuzz_size - offset);
-                    if (attr) {
-                        bool v6 = (fuzz_data[0] % 2) == 1;
-                        interface_ip_add_route(iface, attr, v6);
-                    }
-                    free(iface);
-                }
-            }
-            break;
-        }
-        case 6:
-        case 7: {
-            if (fuzz_size >= 4) {
-                struct blob_attr *attr = create_valid_blob_attr(fuzz_data, fuzz_size);
-                if (attr) {
-                    bool v6 = (fuzz_data[0] % 2) == 1;
-                    iprule_add(attr, v6);
-                }
-            }
-            break;
-        }
-        case 8:
-        case 9: {
-            if (fuzz_size >= 8) {
-                size_t offset = 0;
-                struct extdev_bridge *bridge = create_fuzzed_bridge(fuzz_data, fuzz_size, &offset);
-                if (bridge) {
-                    struct blob_attr *attr = create_valid_blob_attr(fuzz_data + offset, fuzz_size - offset);
-                    if (attr) {
-                        __bridge_reload(bridge, attr);
-                    }
-                    free(bridge);
-                }
-            }
-            break;
-        }
-    }
-}
-
-static struct interface *create_fuzzed_interface(const uint8_t *data, size_t size, size_t *offset) {
-    if (*offset + sizeof(struct interface) > size) return NULL;
-    
-    struct interface *iface = calloc(1, sizeof(struct interface));
-    if (!iface) return NULL;
-    
-    memcpy(iface, data + *offset, sizeof(struct interface));
-    *offset += sizeof(struct interface);
-    
-    static const char *safe_names[] = {"eth0", "wlan0", "br0", "fuzz_if"};
-    iface->name = safe_names[((uintptr_t)iface->name) % 4];
-    
-    INIT_LIST_HEAD(&iface->errors);
-    INIT_LIST_HEAD(&iface->users);
-    INIT_LIST_HEAD(&iface->assignment_classes);
-    
-    memset(&iface->config_ip, 0, sizeof(iface->config_ip));
-    memset(&iface->proto_ip, 0, sizeof(iface->proto_ip));
-    
-    vlist_init(&iface->proto_ip.addr, avl_strcmp, NULL);
-    vlist_init(&iface->proto_ip.route, avl_strcmp, NULL);
-    vlist_init(&iface->proto_ip.prefix, avl_strcmp, NULL);
-    
-    return iface;
-}
-
-static struct uci_section *create_fuzzed_uci_section(const uint8_t *data, size_t size, size_t *offset) {
-    if (*offset + sizeof(struct uci_section) > size) return NULL;
-    
-    static struct uci_context *mock_ctx = NULL;
-    static struct uci_package *mock_pkg = NULL;
-    
-    if (!mock_ctx) {
-        mock_ctx = calloc(1, sizeof(struct uci_context));
-        if (!mock_ctx) return NULL;
-        mock_ctx->root.next = &mock_ctx->root;
-        mock_ctx->root.prev = &mock_ctx->root;
-        mock_ctx->backends.next = &mock_ctx->backends;
-        mock_ctx->backends.prev = &mock_ctx->backends;
-        mock_ctx->delta_path.next = &mock_ctx->delta_path;
-        mock_ctx->delta_path.prev = &mock_ctx->delta_path;
-    }
-    
-    if (!mock_pkg) {
-        mock_pkg = calloc(1, sizeof(struct uci_package));
-        if (!mock_pkg) return NULL;
-        mock_pkg->e.type = 2;
-        mock_pkg->e.name = "mock_package";
-        mock_pkg->e.list.next = &mock_pkg->e.list;
-        mock_pkg->e.list.prev = &mock_pkg->e.list;
-        mock_pkg->sections.next = &mock_pkg->sections;
-        mock_pkg->sections.prev = &mock_pkg->sections;
-        mock_pkg->delta.next = &mock_pkg->delta;
-        mock_pkg->delta.prev = &mock_pkg->delta;
-        mock_pkg->saved_delta.next = &mock_pkg->saved_delta;
-        mock_pkg->saved_delta.prev = &mock_pkg->saved_delta;
-        mock_pkg->ctx = mock_ctx;
-    }
-    
-    struct uci_section *section = calloc(1, sizeof(struct uci_section));
-    if (!section) return NULL;
-    
-    memcpy(section, data + *offset, sizeof(struct uci_section));
-    *offset += sizeof(struct uci_section);
-    
-    static const char *safe_types[] = {
-        "interface", "route", "route6", "rule", "rule6", 
-        "device", "bridge-vlan", "globals", "alias"
-    };
-    static const char *safe_names[] = {"lan", "wan", "wlan", "test_section"};
-    
-    section->type = (char *)safe_types[((uintptr_t)section->type) % 9];
-    section->e.name = (char *)safe_names[((uintptr_t)section->e.name) % 4];
-    section->package = mock_pkg;
-    
-    section->e.list.next = &section->e.list;
-    section->e.list.prev = &section->e.list;
-    section->options.next = &section->options;
-    section->options.prev = &section->options;
-    
-    return section;
-}
-
-static struct extdev_bridge *create_fuzzed_bridge(const uint8_t *data, size_t size, size_t *offset) {
-    if (*offset + sizeof(struct extdev_bridge) > size) return NULL;
-    
-    struct extdev_bridge *bridge = calloc(1, sizeof(struct extdev_bridge));
-    if (!bridge) return NULL;
-    
-    memcpy(bridge, data + *offset, sizeof(struct extdev_bridge));
-    *offset += sizeof(struct extdev_bridge);
-    
-    static struct extdev_type mock_extdev_type = {0};
-    static struct uci_blob_param_list mock_config_params = {0};
-    static struct device_type mock_device_type = {0};
-    
-    mock_config_params.n_params = 0;
-    mock_config_params.params = NULL;
-    mock_device_type.config_params = &mock_config_params;
-    mock_device_type.name = "mock_bridge";
-    mock_extdev_type.handler = mock_device_type;
-    mock_extdev_type.name = "mock_bridge";
-    mock_extdev_type.config_params = &mock_config_params;
-    mock_extdev_type.subscribed = false;
-    
-    bridge->edev.dev.type = &mock_device_type;
-    bridge->edev.etype = &mock_extdev_type;
-    bridge->edev.dep_name = NULL;
-    bridge->config = NULL; 
-    bridge->ifnames = NULL;
-    
-    INIT_SAFE_LIST(&bridge->edev.dev.users);
-    vlist_init(&bridge->members, avl_strcmp, NULL);
-    
-    static const char *safe_bridge_names[] = {"br0", "br-lan", "test_br"};
-    size_t name_idx = ((uintptr_t)bridge->edev.dev.ifname) % 3;
-    strcpy(bridge->edev.dev.ifname, safe_bridge_names[name_idx]);
-    
-    return bridge;
-}
-
-int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
-    init_netifd_for_fuzzing();
-
-    if (size < 8) return 0;
-    
-    if (size < 200) {
-        fuzz_with_reduced_requirements(data, size);
-        return 0;
-    }
-    
-    size_t offset = 0;
-    
-    struct interface *fuzz_iface = create_fuzzed_interface(data, size, &offset);
-    if (!fuzz_iface) return 0;
-    
-    struct uci_section *fuzz_section = create_fuzzed_uci_section(data, size, &offset);
-    if (!fuzz_section) {
-        free(fuzz_iface);
-        return 0;
-    }
-    
-    struct extdev_bridge *fuzz_bridge = create_fuzzed_bridge(data, size, &offset);
-    if (!fuzz_bridge) {
-        free(fuzz_iface);
-        free(fuzz_section);
-        return 0;
-    }
-    
-    if (offset >= size) {
-        free(fuzz_iface);
-        free(fuzz_section);
-        free(fuzz_bridge);
-        return 0;
-    }
-    
-    uint8_t strategy = data[offset] % 6;
-    offset++;
-    
-    const uint8_t *fuzz_data = data + offset;
-    size_t fuzz_size = size - offset;
-    
-    if (fuzz_size == 0) {
-        free(fuzz_iface);
-        free(fuzz_section);  
-        free(fuzz_bridge);
-        return 0;
-    }
-    
-    switch (strategy) {
-        case 0: {
-            fuzz_section->type = "route";
-            add_uci_options_from_fuzz(fuzz_section, fuzz_data, fuzz_size);
-            bool v6_route = (fuzz_data[0] % 2) == 1;
-            config_parse_route(fuzz_section, v6_route);
-            break;
-        }
         case 1:
-            if (fuzz_size >= 8) {
-                struct blob_attr *attr = create_valid_blob_attr(fuzz_data, fuzz_size);
-                if (attr) {
-                    bool v6_iface = (fuzz_data[0] % 2) == 1;
-                    interface_ip_add_route(fuzz_iface, attr, v6_iface);
-                }
-            }
+            fuzz_blob_parsing(fuzz_data, fuzz_size);
             break;
         case 2:
-            if (fuzz_size >= 8) {
-                struct blob_attr *attr = create_valid_blob_attr(fuzz_data, fuzz_size);
-                if (attr) {
-                    bool v6_rule = (fuzz_data[0] % 2) == 1;
-                    iprule_add(attr, v6_rule);
-                }
+            // Mix both approaches
+            if (fuzz_size > 8) {
+                size_t split = fuzz_size / 2;
+                fuzz_uci_config_parsing(fuzz_data, split);
+                fuzz_blob_parsing(fuzz_data + split, fuzz_size - split);
             }
             break;
-        case 3: {
-            bool alias = (fuzz_data[0] % 2) == 1;
-            fuzz_section->type = "interface";
-            add_uci_options_from_fuzz(fuzz_section, fuzz_data, fuzz_size);
-            config_parse_interface(fuzz_section, alias);
-            break;
-        }
-        case 4: {
-            struct blob_attr *attr = create_blob_from_fuzz_data(fuzz_data, fuzz_size);
-            if (attr) {
-                struct blob_attr *old_config = fuzz_bridge->config;
-                __bridge_reload(fuzz_bridge, attr);
-                if (old_config && old_config != fuzz_bridge->config) {
-                    free(old_config);
-                }
-            }
-            break;
-        }
-        case 5:
-            fuzz_bonding_create(fuzz_data, fuzz_size);
-            break;
-    }
-
-    if (fuzz_iface) {
-        struct interface_error *error, *tmp;
-        list_for_each_entry_safe(error, tmp, &fuzz_iface->errors, list) {
-            list_del(&error->list);
-            free(error);
-        }
-        free(fuzz_iface);
-    }
-    
-    if (fuzz_section) {
-        free(fuzz_section);
-    }
-    
-    if (fuzz_bridge) {
-        if (fuzz_bridge->config) {
-            free(fuzz_bridge->config);
-        }
-        free(fuzz_bridge);
     }
     
     return 0;
 }
 
-__attribute__((destructor))
-static void fuzz_cleanup(void) {
-    extern struct ubus_context *ubus_ctx;
-    if (g_fuzzing_mode && ubus_ctx) {
-        if (ubus_ctx->sock.fd == -1) {
-            free(ubus_ctx);
-            ubus_ctx = NULL;
-        } else {
-            extern void netifd_ubus_done(void);
-            netifd_ubus_done();
-        }
-    }
-}
-
-
+// // AFL++ integration
 // #ifndef __AFL_FUZZ_TESTCASE_LEN
-
 // ssize_t fuzz_len;
 // unsigned char fuzz_buf[1024000];
-
 // #define __AFL_FUZZ_TESTCASE_LEN fuzz_len
 // #define __AFL_FUZZ_TESTCASE_BUF fuzz_buf  
 // #define __AFL_FUZZ_INIT() void sync(void);
 // #define __AFL_LOOP(x) \
 //     ((fuzz_len = read(0, fuzz_buf, sizeof(fuzz_buf))) > 0 ? 1 : 0)
 // #define __AFL_INIT() sync()
-
 // #endif
 
 // __AFL_FUZZ_INIT();
@@ -538,8 +417,7 @@ static void fuzz_cleanup(void) {
 // #pragma clang optimize off
 // #pragma GCC optimize("O0")
 
-// int main(int argc, char **argv)
-// {
+// int main(int argc, char **argv) {
 //     (void)argc; (void)argv; 
     
 //     ssize_t len;
@@ -553,228 +431,15 @@ static void fuzz_cleanup(void) {
 //     }
     
 //     return 0;
-// }
+//}
 
-
-static struct blob_attr *create_blob_from_fuzz_data(const uint8_t *data, size_t size) {
-    static struct blob_buf fuzz_buf;
-    void *array_cookie;
-    
-    if (size == 0) return NULL;
-    
-    blob_buf_init(&fuzz_buf, 0);
-    
-    array_cookie = blobmsg_open_array(&fuzz_buf, "routes");
-    
-    size_t offset = 0;
-    int entry_count = 0;
-    
-    while (offset < size && entry_count < 10) {
-        void *table_cookie = blobmsg_open_table(&fuzz_buf, NULL);
-        
-        if (offset < size) {
-            uint8_t field_selector = data[offset] % 4;
-            offset++;
-            
-            switch (field_selector) {
-                case 0:
-                    if (offset + 4 <= size) {
-                        blobmsg_add_string(&fuzz_buf, "target", "192.168.1.0");
-                        blobmsg_add_string(&fuzz_buf, "netmask", "255.255.255.0");
-                        offset += 4;
-                    }
-                    break;
-                case 1:
-                    if (offset + 4 <= size) {
-                        blobmsg_add_string(&fuzz_buf, "gateway", "192.168.1.1");
-                        offset += 4;
-                    }
-                    break;
-                case 2:
-                    if (offset + 4 <= size) {
-                        uint32_t metric;
-                        memcpy(&metric, data + offset, sizeof(uint32_t));
-                        blobmsg_add_u32(&fuzz_buf, "metric", metric % 1000);
-                        offset += 4;
-                    }
-                    break;
-                case 3:
-                    blobmsg_add_string(&fuzz_buf, "interface", "fuzz_iface");
-                    break;
-            }
-        }
-        
-        blobmsg_close_table(&fuzz_buf, table_cookie);
-        entry_count++;
-        
-        if (offset >= size) break;
-    }
-    
-    blobmsg_close_array(&fuzz_buf, array_cookie);
-    
-    return blob_data(fuzz_buf.head);
-}
-
-static void fuzz_bonding_create(const uint8_t *data, size_t size) {
-    if (size < 8) return;
-    
-    static struct blob_buf bonding_buf;
-    blob_buf_init(&bonding_buf, 0);
-    
-    size_t offset = 0;
-    
-    if (offset < size) {
-        uint8_t policy_idx = data[offset] % 7; // 7 bonding modes available
-        const char *policies[] = {
-            "balance-rr", "active-backup", "balance-xor", "broadcast",
-            "802.3ad", "balance-tlb", "balance-alb"
-        };
-        blobmsg_add_string(&bonding_buf, "policy", policies[policy_idx]);
-        offset++;
-    }
-    
-    if (offset + 1 < size) {
-        void *ports_array = blobmsg_open_array(&bonding_buf, "ports");
-        
-        uint8_t num_ports = 1 + (data[offset] % 4);
-        offset++;
-        
-        for (int i = 0; i < num_ports && offset < size; i++) {
-            char port_name[16];
-            snprintf(port_name, sizeof(port_name), "eth%d", i);
-            blobmsg_add_string(&bonding_buf, NULL, port_name);
-        }
-        
-        blobmsg_close_array(&bonding_buf, ports_array);
-    }
-    
-    if (offset + 4 <= size) {
-        uint32_t min_links;
-        memcpy(&min_links, data + offset, sizeof(uint32_t));
-        blobmsg_add_u32(&bonding_buf, "min_links", min_links % 8);
-        offset += 4;
-    }
-    
-    if (offset + 4 <= size) {
-        uint32_t monitor_interval;
-        memcpy(&monitor_interval, data + offset, sizeof(uint32_t));
-        blobmsg_add_u32(&bonding_buf, "monitor_interval", monitor_interval % 1000);
-        offset += 4;
-    }
-    
-    if (offset < size) {
-        blobmsg_add_u8(&bonding_buf, "all_ports_active", data[offset] & 1);
-        offset++;
-    }
-    
-    if (offset < size) {
-        blobmsg_add_u8(&bonding_buf, "use_carrier", data[offset] & 1);
-        offset++;
-    }
-    
-    if (offset < size) {
-        uint8_t hash_policy_idx = data[offset] % 4;
-        const char *hash_policies[] = {
-            "layer2", "layer2+3", "layer3+4", "encap2+3"
-        };
-        blobmsg_add_string(&bonding_buf, "xmit_hash_policy", hash_policies[hash_policy_idx]);
-        offset++;
-    }
-
-    if (offset < size) {
-        char primary_port[16];
-        snprintf(primary_port, sizeof(primary_port), "eth%d", data[offset] % 4);
-        blobmsg_add_string(&bonding_buf, "primary", primary_port);
-        offset++;
-    }
-    
-    if (offset + 4 <= size) {
-        uint32_t ad_actor_sys_prio;
-        memcpy(&ad_actor_sys_prio, data + offset, sizeof(uint32_t));
-        blobmsg_add_u32(&bonding_buf, "ad_actor_sys_prio", ad_actor_sys_prio % 65536);
-        offset += 4;
-    }
-    
-    if (offset + 4 <= size) {
-        uint32_t packets_per_port;
-        memcpy(&packets_per_port, data + offset, sizeof(uint32_t));
-        blobmsg_add_u32(&bonding_buf, "packets_per_port", packets_per_port % 100);
-        offset += 4;
-    }
-    
-    if (offset + 4 <= size) {
-        uint32_t updelay;
-        memcpy(&updelay, data + offset, sizeof(uint32_t));
-        blobmsg_add_u32(&bonding_buf, "updelay", updelay % 1000);
-        offset += 4;
-    }
-    
-    if (offset + 4 <= size) {
-        uint32_t downdelay;
-        memcpy(&downdelay, data + offset, sizeof(uint32_t));
-        blobmsg_add_u32(&bonding_buf, "downdelay", downdelay % 1000);
-        offset += 4;
-    }
-    
-    if (offset < size) {
-        const char *primary_reselect_opts[] = {"always", "better", "failure"};
-        uint8_t reselect_idx = data[offset] % 3;
-        blobmsg_add_string(&bonding_buf, "primary_reselect", primary_reselect_opts[reselect_idx]);
-        offset++;
-    }
-    
-    if (offset < size) {
-        const char *failover_mac_opts[] = {"none", "active", "follow"};
-        uint8_t failover_idx = data[offset] % 3;
-        blobmsg_add_string(&bonding_buf, "failover_mac", failover_mac_opts[failover_idx]);
-        offset++;
-    }
-    
-    if (offset < size && (data[offset] & 1)) {
-        blobmsg_add_string(&bonding_buf, "monitor_mode", "arp");
-        
-        if (offset + 1 < size) {
-            void *arp_targets = blobmsg_open_array(&bonding_buf, "arp_target");
-            blobmsg_add_string(&bonding_buf, NULL, "192.168.1.1");
-            blobmsg_add_string(&bonding_buf, NULL, "192.168.1.254");
-            blobmsg_close_array(&bonding_buf, arp_targets);
-        }
-        
-        if (offset + 1 < size) {
-            blobmsg_add_u8(&bonding_buf, "arp_all_targets", data[offset + 1] & 1);
-        }
-        
-        offset += 2;
-    }
-    
-    extern struct device_type *device_type_get(const char *name);
-    struct device_type *bonding_type = device_type_get("bonding");
-    if (!bonding_type) {
-        return;
-    }
-    
-    static int bonding_counter = 0;
-    char bonding_name[32];
-    snprintf(bonding_name, sizeof(bonding_name), "bond%d", bonding_counter++);
-    
-    extern struct device *device_create(const char *name, struct device_type *type, struct blob_attr *config);
-    struct device *bonding_dev = device_create(bonding_name, bonding_type, blob_data(bonding_buf.head));
-    
-    if (bonding_dev) {
-        bonding_dev->current_config = false;
-        
-        extern void _device_set_present(struct device *dev, bool state);
-        _device_set_present(bonding_dev, false);
-        
-        if (bonding_dev->type && bonding_dev->type->free) {
-            bonding_dev->type->free(bonding_dev);
-        } else {    
-            if (bonding_dev->config) {
-                free(bonding_dev->config);
-                bonding_dev->config = NULL;
-            }
-            extern void device_cleanup(struct device *dev);
-            device_cleanup(bonding_dev);
-        }
+// Cleanup on exit
+__attribute__((destructor))
+static void fuzz_cleanup(void) {
+    if (fuzz_uci_ctx) {
+        // UCI context cleanup will handle the package cleanup
+        uci_free_context(fuzz_uci_ctx);
+        fuzz_uci_ctx = NULL;
+        fuzz_uci_pkg = NULL; // Will be freed by uci_free_context
     }
 }
