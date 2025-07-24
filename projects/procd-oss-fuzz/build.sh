@@ -90,10 +90,12 @@ ls -la
 
 # Export paths for pkg-config & compiler
 export PKG_CONFIG_PATH="$INSTALL_DIR/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+# Compiler & linker flags (mirror Makefile.afl)
+
 : "${LDFLAGS:=}"
-export CFLAGS="$CFLAGS -I$INSTALL_DIR/include -D_GNU_SOURCE -std=gnu99 -DSECCOMP_SUPPORT"
-# Add fallback for newer audit architecture constants that might not be in older headers
-export CFLAGS="$CFLAGS -DAUDIT_ARCH_LOONGARCH64=0xc00000e2"
+CFLAGS_BASE="-O2 -fPIC -std=gnu99 -g -Wall -Wno-c23-extensions -D_GNU_SOURCE -DSECCOMP_SUPPORT"
+export CFLAGS="$CFLAGS_BASE -I$INSTALL_DIR/include -I$SRC/oss-fuzz-auto -DAUDIT_ARCH_LOONGARCH64=0xc00000e2"
+# Linker flags
 export LDFLAGS="$LDFLAGS -L$INSTALL_DIR/lib"
 
 # Generate capabilities-names.h (required by jail/capabilities.c)
