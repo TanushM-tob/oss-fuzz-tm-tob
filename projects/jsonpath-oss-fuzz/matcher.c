@@ -382,8 +382,14 @@ struct json_object *
 jp_match(struct jp_opcode *path, json_object *jsobj,
          jp_match_cb_t cb, void *priv)
 {
+	if (!path)
+		return NULL;
+
 	if (path->type == T_LABEL)
 		path = path->down;
+
+	if (!path)
+		return NULL;
 
 	return jp_match_next(path->down, jsobj, jsobj, cb, priv);
 }
