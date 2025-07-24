@@ -408,18 +408,18 @@ static int parse_answer(struct interface *iface, struct sockaddr *from,
 			uint8_t *buffer, int len, uint8_t **b, int *rlen,
 			int cache)
 {
-	char *name = (buffer, len, b, rlen);
+	char *name = dns_consume_name(buffer, len, b, rlen);
 	struct dns_answer *a;
 	uint8_t *rdata;
 
 	if (!name || *rlen < 0) {
-		//fprintf(stderr, "dropping: bad question\n");
+		//f//printf(stderr, "dropping: bad question\n");
 		return -1;
 	}
 
 	a = dns_consume_answer(b, rlen);
 	if (!a) {
-		//fprintf(stderr, "dropping: bad question\n");
+		//f//printf(stderr, "dropping: bad question\n");
 		return -1;
 	}
 
@@ -428,7 +428,7 @@ static int parse_answer(struct interface *iface, struct sockaddr *from,
 
 	rdata = *b;
 	if (a->rdlength > *rlen) {
-		//fprintf(stderr, "dropping: bad question\n");
+		//f//printf(stderr, "dropping: bad question\n");
 		return -1;
 	}
 
@@ -660,48 +660,95 @@ dns_handle_packet(struct interface *iface, struct sockaddr *from, uint16_t port,
 	uint8_t *b = buffer;
 	int rlen = len;
 
+	/*printf("[DNS_DEBUG] === dns_handle_packet ENTRY ===\n");
+	printf("[DNS_DEBUG] Interface: %s, Port: %u, Buffer length: %d\n", 
+		iface ? iface->name : "NULL", port, len);*/
+
 	h = dns_consume_header(&b, &rlen);
 	if (!h) {
+		/*printf("[DNS_DEBUG] ❌ DROPPING: bad header (h=%p)\n", h);*/
 		//fprintf(stderr, "dropping: bad header\n");
 		return;
 	}
+	/*printf("[DNS_DEBUG] ✓ Header parsed successfully\n");
+	printf("[DNS_DEBUG] Header - Questions: %u, Answers: %u, Authority: %u, Additional: %u\n",
+		h->questions, h->answers, h->authority, h->additional);
+	printf("[DNS_DEBUG] Header - Flags: 0x%04x (Response: %s)\n", 
+		h->flags, (h->flags & FLAG_RESPONSE) ? "YES" : "NO");*/
 
-	if (h->questions && !interface_multicast(iface) && port != MCAST_PORT)
+	if (h->questions && !interface_multicast(iface) && port != MCAST_PORT) {
+		/*printf("[DNS_DEBUG] ❌ DROPPING: silently drop unicast questions from non-5353 port\n");
+		printf("[DNS_DEBUG]   - h->questions: %u\n", h->questions);
+		printf("[DNS_DEBUG]   - interface_multicast(iface): %s\n", interface_multicast(iface) ? "true" : "false");
+		printf("[DNS_DEBUG]   - port: %u (MCAST_PORT=%d)\n", port, MCAST_PORT);*/
 		/* silently drop unicast questions that dont originate from port 5353 */
 		return;
+	}
+	/*printf("[DNS_DEBUG] ✓ Unicast question check passed\n");*/
 
 	while (h->questions-- > 0) {
+		/*printf("[DNS_DEBUG] --- Processing question %u ---\n", h->questions);*/
 		char *name = dns_consume_name(buffer, len, &b, &rlen);
 		struct dns_question *q;
 
 		if (!name || rlen < 0) {
+			/*printf("[DNS_DEBUG] ❌ DROPPING: bad name (name=%p, rlen=%d)\n", name, rlen);*/
 			////fprintf(stderr, "dropping: bad name\n");
 			return;
 		}
+		/*printf("[DNS_DEBUG] ✓ Name parsed: '%s' (rlen remaining: %d)\n", name, rlen);*/
 
 		q = dns_consume_question(&b, &rlen);
 		if (!q) {
+			/*printf("[DNS_DEBUG] ❌ DROPPING: bad question (q=%p)\n", q);*/
 			//fprintf(stderr, "dropping: bad question\n");
 			return;
 		}
+		/*printf("[DNS_DEBUG] ✓ Question parsed - Type: %u, Class: %u\n", q->type, q->class);*/
 
-		if (!(h->flags & FLAG_RESPONSE))
+		if (!(h->flags & FLAG_RESPONSE)) {
+			/*printf("[DNS_DEBUG] ✓ Processing question (not a response)\n");*/
 			parse_question(iface, from, name, q);
+		} /*else {
+			printf("[DNS_DEBUG] ⚠ Skipping question processing (this is a response)\n");
+		}*/
 	}
 
-	if (!(h->flags & FLAG_RESPONSE))
+	if (!(h->flags & FLAG_RESPONSE)) {
+		/*printf("[DNS_DEBUG] ❌ EARLY RETURN: Not a response packet, done processing\n");*/
 		return;
+	}
+	/*printf("[DNS_DEBUG] ✓ This is a response packet, processing answers...\n");
 
-	while (h->answers-- > 0)
-		if (parse_answer(iface, from, buffer, len, &b, &rlen, 1))
+	printf("[DNS_DEBUG] Processing %u answer records...\n", h->answers);*/
+	while (h->answers-- > 0) {
+		/*printf("[DNS_DEBUG] --- Processing answer %u ---\n", h->answers);*/
+		if (parse_answer(iface, from, buffer, len, &b, &rlen, 1)) {
+			/*printf("[DNS_DEBUG] ❌ DROPPING: parse_answer failed for answer record\n");*/
 			return;
+		}
+		/*printf("[DNS_DEBUG] ✓ Answer processed successfully\n");*/
+	}
 
-	while (h->authority-- > 0)
-		if (parse_answer(iface, from, buffer, len, &b, &rlen, 1))
+	/*printf("[DNS_DEBUG] Processing %u authority records...\n", h->authority);*/
+	while (h->authority-- > 0) {
+		/*printf("[DNS_DEBUG] --- Processing authority %u ---\n", h->authority);*/
+		if (parse_answer(iface, from, buffer, len, &b, &rlen, 1)) {
+			/*printf("[DNS_DEBUG] ❌ DROPPING: parse_answer failed for authority record\n");*/
 			return;
+		}
+		/*printf("[DNS_DEBUG] ✓ Authority processed successfully\n");*/
+	}
 
-	while (h->additional-- > 0)
-		if (parse_answer(iface, from, buffer, len, &b, &rlen, 1))
+	/*printf("[DNS_DEBUG] Processing %u additional records...\n", h->additional);*/
+	while (h->additional-- > 0) {
+		/*printf("[DNS_DEBUG] --- Processing additional %u ---\n", h->additional);*/
+		if (parse_answer(iface, from, buffer, len, &b, &rlen, 1)) {
+			/*printf("[DNS_DEBUG] ❌ DROPPING: parse_answer failed for additional record\n");*/
 			return;
+		}
+		/*printf("[DNS_DEBUG] ✓ Additional processed successfully\n");*/
+	}
 
+	/*printf("[DNS_DEBUG] === dns_handle_packet COMPLETE ===\n\n");*/
 }
