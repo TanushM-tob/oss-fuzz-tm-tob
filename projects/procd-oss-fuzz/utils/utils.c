@@ -25,6 +25,7 @@
 #include <errno.h>
 
 #include "../log.h"
+#include "compat.h"
 
 #ifndef O_PATH
 #define O_PATH		010000000

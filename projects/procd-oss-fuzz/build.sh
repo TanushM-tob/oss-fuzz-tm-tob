@@ -32,9 +32,10 @@ fi
 cd libubox
 rm -rf tests || true
 mkdir -p build && cd build
+# Build dependencies without sanitizer flags to avoid ASAN runtime issues
 cmake .. \
   -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
-  -DCMAKE_C_FLAGS="$CFLAGS" \
+  -DCMAKE_C_FLAGS="-O2 -fPIC -std=gnu99 -g" \
   -DBUILD_LUA=OFF \
   -DBUILD_EXAMPLES=OFF \
   -DBUILD_TESTS=OFF \
@@ -51,9 +52,10 @@ fi
 cd ubus
 rm -rf tests || true
 mkdir -p build && cd build
+# Build dependencies without sanitizer flags to avoid ASAN runtime issues
 cmake .. \
   -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
-  -DCMAKE_C_FLAGS="$CFLAGS" \
+  -DCMAKE_C_FLAGS="-O2 -fPIC -std=gnu99 -g" \
   -DCMAKE_EXE_LINKER_FLAGS="-lrt" \
   -DBUILD_LUA=OFF \
   -DBUILD_EXAMPLES=OFF \
@@ -121,6 +123,9 @@ for src in $jail_sources; do
     $CC $CFLAGS -c "jail/$src" -o "$OBJ_DIR/$(basename $src .c).o"
   fi
 done
+
+# Compile compatibility functions first
+$CC $CFLAGS -c compat.c -o "$OBJ_DIR/compat.o"
 
 # Compile additional helpers from utils (exclude askfirst.c)
 $CC $CFLAGS -c utils/utils.c -o "$OBJ_DIR/utils.o"

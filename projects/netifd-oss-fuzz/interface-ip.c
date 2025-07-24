@@ -549,7 +549,7 @@ addr_cmp(const void *k1, const void *k2, void *ptr)
 	return memcmp(k1+cmp_offset, k2+cmp_offset, cmp_size);
 }
 
-static int
+int
 neighbor_cmp(const void *k1, const void *k2, void *ptr)
 {
 	const struct device_neighbor *n1 = k1, *n2 = k2;

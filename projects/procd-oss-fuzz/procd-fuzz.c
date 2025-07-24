@@ -20,6 +20,7 @@
 #include "jail/fs.h"
 #include "jail/seccomp-oci.h"
 #include "log.h"
+#include "compat.h"
 
 // External function declarations
 extern int parseOCI(const char *jsonfile);
@@ -42,15 +43,7 @@ int jail_network_stop(void) {
     return 0;
 }
 
-size_t strlcpy(char *dst, const char *src, size_t size) {
-    size_t srclen = strlen(src);
-    if (size > 0) {
-        size_t copylen = (srclen < size - 1) ? srclen : size - 1;
-        memcpy(dst, src, copylen);
-        dst[copylen] = '\0';
-    }
-    return srclen;
-}
+
 
 // Global state
 static char temp_filename[256] = {0};
@@ -323,6 +316,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     return 0;
 }
 
+// AFL-specific code - only compile when not using libFuzzer
+#ifdef AFL_FUZZING
+
 #ifndef __AFL_FUZZ_TESTCASE_LEN
 
 ssize_t fuzz_len;
@@ -359,31 +355,12 @@ int main(int argc, char **argv)
     return 0;
 }
 
+#endif /* AFL_FUZZING */
+
 // Minimal stubs for missing functionality
 char **environ = NULL;
 
-// Global opts structure stub
-struct {
-    char *hostname;
-    char **jail_argv; 
-    char **envp;
-    struct {
-        uint64_t effective;
-        uint64_t permitted;
-        uint64_t inheritable;
-        uint64_t bounding;
-        uint64_t ambient;
-    } capset;
-    void *ociseccomp;
-    struct {
-        struct hook_execvpe **createRuntime;
-        struct hook_execvpe **createContainer;
-        struct hook_execvpe **startContainer;
-        struct hook_execvpe **poststart;
-        struct hook_execvpe **poststop;
-    } hooks;
-    char *capabilities;
-} opts = {0};
+// Note: opts struct is defined in jail/jail.c - no need to duplicate it here
 
 struct hook_execvpe {
     char **argv;

@@ -17,7 +17,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#define _GNU_SOURCE
+
 #define _XOPEN_SOURCE	700
 #include <strings.h>
 #ifdef HAVE_SHADOW

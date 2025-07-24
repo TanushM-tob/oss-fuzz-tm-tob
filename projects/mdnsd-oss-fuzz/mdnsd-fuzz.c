@@ -23,6 +23,9 @@
 #include "util.h"
 #include "service.h"
 
+// Define maximum DNS packet size (8192 bytes)
+#define MAX_DNS_PACKET_SIZE MDNS_BUF_LEN
+
 int cfg_proto = 0;
 int cfg_no_subnet = 0;
 
@@ -211,7 +214,13 @@ static void setup_ipv6_sockaddr(struct sockaddr_in6 *addr, uint16_t port) {
 }
 
 static bool validate_dns_packet(uint8_t *data, size_t size) {
+    // Check for minimum DNS header size
     if (size < sizeof(struct dns_header)) {
+        return false;
+    }
+    
+    // Enforce maximum packet size
+    if (size > MAX_DNS_PACKET_SIZE) {
         return false;
     }
     
@@ -283,6 +292,11 @@ static struct blob_attr* create_query_blob(uint8_t *data, size_t size) {
 static void fuzz_dns_handle_packet_comprehensive(uint8_t *input, size_t size) {
     cache_init();
     
+    // Enforce maximum packet size
+    if (size > MAX_DNS_PACKET_SIZE) {
+        size = MAX_DNS_PACKET_SIZE;
+    }
+    
     if (size < 12) { // DNS header is 12 bytes minimum
         goto cleanup;
     }
@@ -296,6 +310,11 @@ static void fuzz_dns_handle_packet_comprehensive(uint8_t *input, size_t size) {
     
     uint8_t *packet_data = input + 2;
     size_t packet_size = size - 2;
+    
+    // Ensure packet_size doesn't exceed buffer
+    if (packet_size > MAX_DNS_PACKET_SIZE - 2) {
+        packet_size = MAX_DNS_PACKET_SIZE - 2;
+    }
     
     for (int test_case = 0; test_case < 8; test_case++) {
         if ((config & (1 << test_case)) == 0) continue; 

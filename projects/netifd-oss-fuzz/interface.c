@@ -1404,7 +1404,7 @@ out:
 	free(if_new);
 }
 
-static void
+void
 interface_update(struct vlist_tree *tree, struct vlist_node *node_new,
 		 struct vlist_node *node_old)
 {
