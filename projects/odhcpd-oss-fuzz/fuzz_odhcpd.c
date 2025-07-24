@@ -14,7 +14,7 @@
 #include <netinet/if_ether.h>
 #include <linux/if_packet.h>
 #include <libubus.h>
-
+#include <limits.h>
 #include "src/odhcpd.h"
 #include "src/dhcpv6.h"
 
@@ -63,6 +63,12 @@ static void fuzz_dhcpv4(const uint8_t *data, size_t size) {
     
     dhcpv4_handle_msg(&client_addr, copy, size, &iface, NULL, 
                       mock_send_reply, &dummy_fd);
+
+    // Clean up any DHCP assignments created during message handling to prevent memory leaks
+    struct dhcp_assignment *a, *tmp;
+    list_for_each_entry_safe(a, tmp, &iface.dhcpv4_assignments, head) {
+        free_assignment(a);
+    }
 
     if (size >= 4 && size <= 1024) {
         uint8_t *config_copy = malloc(size);
@@ -198,6 +204,12 @@ static void fuzz_dhcpv6(const uint8_t *data, size_t size) {
         iface_no_dns.dns = NULL;
         iface_no_dns.dns_cnt = 0;
         handle_dhcpv6(&source_addr, copy, size, &iface_no_dns, &dest_addr);
+    }
+    
+    // Clean up any DHCPv6 assignments created during message handling to prevent memory leaks
+    struct dhcp_assignment *a, *tmp;
+    list_for_each_entry_safe(a, tmp, &iface_server.ia_assignments, head) {
+        free_assignment(a);
     }
     
     free(copy);
@@ -394,3 +406,40 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     
     return 0;
 }
+
+
+// #ifndef __AFL_FUZZ_TESTCASE_LEN
+
+// ssize_t fuzz_len;
+// unsigned char fuzz_buf[1024000];
+
+// #define __AFL_FUZZ_TESTCASE_LEN fuzz_len
+// #define __AFL_FUZZ_TESTCASE_BUF fuzz_buf  
+// #define __AFL_FUZZ_INIT() void sync(void);
+// #define __AFL_LOOP(x) \
+//     ((fuzz_len = read(0, fuzz_buf, sizeof(fuzz_buf))) > 0 ? 1 : 0)
+// #define __AFL_INIT() sync()
+
+// #endif
+
+// __AFL_FUZZ_INIT();
+
+// #pragma clang optimize off
+// #pragma GCC optimize("O0")
+
+// int main(int argc, char **argv)
+// {
+//     (void)argc; (void)argv; 
+    
+//     ssize_t len;
+//     unsigned char *buf;
+
+//     __AFL_INIT();
+//     buf = __AFL_FUZZ_TESTCASE_BUF;
+//     while (__AFL_LOOP(INT_MAX)) {
+//         len = __AFL_FUZZ_TESTCASE_LEN;
+//         LLVMFuzzerTestOneInput(buf, (size_t)len);
+//     }
+    
+//     return 0;
+// }
