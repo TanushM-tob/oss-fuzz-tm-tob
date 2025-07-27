@@ -24,40 +24,30 @@ static void fuzzer_init(void) {
     if (fuzzer_initialized) 
         return;
     
-    // Initialize syslog to avoid crashes from syslog calls
     openlog("odhcpd_fuzzer", LOG_PERROR | LOG_PID, LOG_DAEMON);
-    setlogmask(LOG_UPTO(LOG_ERR)); // Only log errors to reduce noise
+    setlogmask(LOG_UPTO(LOG_ERR));
     uloop_init();
-    
-    // Initialize core subsystems needed for fuzzing
+
     if (netlink_init() != 0) {
-        // Continue anyway for fuzzing, netlink functions will fail gracefully
     }
     
     if (ndp_init() != 0) {  
-        // Continue anyway for fuzzing
     }
     
-    // Initialize DHCPv4 subsystem - essential for dhcpv4_handle_msg
     if (dhcpv4_init() != 0) {
-        // Continue anyway for fuzzing
     }
     
-    // Initialize DHCPv6 subsystem
     if (dhcpv6_init() != 0) {
-        // Continue anyway for fuzzing
     }
     
-    // Initialize router subsystem
     if (router_init() != 0) {
-        // Continue anyway for fuzzing
     }
     
     static struct interface mock_iface;
     memset(&mock_iface, 0, sizeof(mock_iface));
     mock_iface.ifindex = 1;
-    mock_iface.ifname = "mock0";  
-    mock_iface.name = "mock0";
+    mock_iface.ifname = strdup("mock0");  
+    mock_iface.name = strdup("mock0");
     mock_iface.inuse = true;
     mock_iface.dhcpv6 = MODE_SERVER;
     mock_iface.dhcpv4 = MODE_SERVER;
@@ -67,7 +57,6 @@ static void fuzzer_init(void) {
     INIT_LIST_HEAD(&mock_iface.dhcpv4_assignments);
     INIT_LIST_HEAD(&mock_iface.dhcpv4_fr_ips);
     
-    // Add to global interfaces tree - this prevents crashes in avl_for_each_element iterations
     mock_iface.avl.key = mock_iface.name;
     avl_insert(&interfaces, &mock_iface.avl);
     
@@ -90,8 +79,8 @@ static void fuzz_dhcpv4(const uint8_t *data, size_t size) {
     
     iface.ifflags = 0;
     iface.ifindex = 1;
-    iface.ifname = "test0";
-    iface.name = "test0";
+    iface.ifname = strdup("test0");
+    iface.name = strdup("test0");
     
     iface.dhcpv4 = MODE_SERVER;
     
@@ -120,12 +109,15 @@ static void fuzz_dhcpv4(const uint8_t *data, size_t size) {
     dhcpv4_handle_msg(&client_addr, copy, size, &iface, NULL, 
                       mock_send_reply, &dummy_fd);
 
-    // Clean up any DHCP assignments created during message handling to prevent memory leaks
     struct dhcp_assignment *a, *tmp;
     list_for_each_entry_safe(a, tmp, &iface.dhcpv4_assignments, head) {
         free_assignment(a);
     }
 
+    // Add cleanup for strdup'ed strings
+    free((void*)iface.ifname);
+    free((void*)iface.name);
+    
     if (size >= 4 && size <= 1024) {
         uint8_t *config_copy = malloc(size);
         if (config_copy) {
@@ -148,8 +140,8 @@ static void fuzz_dhcpv6(const uint8_t *data, size_t size) {
     
     iface_server.ifflags = 0;
     iface_server.ifindex = 1;
-    iface_server.ifname = "test0";
-    iface_server.name = "test0";
+    iface_server.ifname = strdup("test0");
+    iface_server.name = strdup("test0");
     iface_server.inuse = true;
     iface_server.external = false;
     iface_server.master = false;
@@ -208,8 +200,8 @@ static void fuzz_dhcpv6(const uint8_t *data, size_t size) {
         
         iface_relay.dhcpv6 = MODE_RELAY;
         iface_relay.master = false;
-        iface_relay.ifname = "test1";
-        iface_relay.name = "test1";
+        iface_relay.ifname = strdup("test1");
+        iface_relay.name = strdup("test1");
         iface_relay.ifindex = 2;
         
         memcpy(copy, data, size);
@@ -219,6 +211,10 @@ static void fuzz_dhcpv6(const uint8_t *data, size_t size) {
         iface_relay.master = true;
         memcpy(copy, data, size);
         handle_dhcpv6(&source_addr, copy, size, &iface_relay, &dest_addr);
+        
+        // Cleanup relay interface within its scope
+        free((void*)iface_relay.ifname);
+        free((void*)iface_relay.name);
     }
     
     if (size >= 2) {
@@ -268,6 +264,10 @@ static void fuzz_dhcpv6(const uint8_t *data, size_t size) {
         free_assignment(a);
     }
     
+    // Add cleanup for strdup'ed strings
+    free((void*)iface_server.ifname);
+    free((void*)iface_server.name);
+    
     free(copy);
 }
 
@@ -294,8 +294,8 @@ static void fuzz_icmpv6(const uint8_t *data, size_t size) {
     
     iface_router.ifflags = 0;
     iface_router.ifindex = 1;
-    iface_router.ifname = "test0";
-    iface_router.name = "test0";
+    iface_router.ifname = strdup("test0");
+    iface_router.name = strdup("test0");
     iface_router.inuse = true;
     iface_router.external = false;
     iface_router.master = false;
@@ -346,8 +346,8 @@ static void fuzz_icmpv6(const uint8_t *data, size_t size) {
         
         iface_relay.ra = MODE_RELAY;
         iface_relay.master = false;
-        iface_relay.ifname = "test1";
-        iface_relay.name = "test1";
+        iface_relay.ifname = strdup("test1");
+        iface_relay.name = strdup("test1");
         iface_relay.ifindex = 2;
         
         memcpy(copy, data, size);
@@ -357,7 +357,15 @@ static void fuzz_icmpv6(const uint8_t *data, size_t size) {
         iface_relay.master = true;
         memcpy(copy, data, size);
         handle_icmpv6(&source_addr, copy, size, &iface_relay, &dest_addr);
+        
+        // Add cleanup for relay interface
+        free((void*)iface_relay.ifname);
+        free((void*)iface_relay.name);
     }
+    
+    // Add cleanup for router interface
+    free((void*)iface_router.ifname);
+    free((void*)iface_router.name);
     
     free(copy);
 }
@@ -372,8 +380,8 @@ static void fuzz_ndp_solicit(const uint8_t *data, size_t size) {
     
     iface_ndp.ifflags = 0;
     iface_ndp.ifindex = 1;
-    iface_ndp.ifname = "test0";
-    iface_ndp.name = "test0";
+    iface_ndp.ifname = strdup("test0");
+    iface_ndp.name = strdup("test0");
     iface_ndp.inuse = true;
     iface_ndp.external = false;
     iface_ndp.master = false;
@@ -424,14 +432,22 @@ static void fuzz_ndp_solicit(const uint8_t *data, size_t size) {
         memcpy(&iface_external, &iface_ndp, sizeof(iface_external));
         
         iface_external.external = true;
-        iface_external.ifname = "test_ext";
-        iface_external.name = "test_ext";
+        iface_external.ifname = strdup("test_ext");
+        iface_external.name = strdup("test_ext");
         iface_external.ifindex = 3;
         
         memcpy(copy, data, size);
         
         handle_solicit(&source_ll, copy, size, &iface_external, &dest_addr);
+        
+        // Add cleanup for external interface
+        free((void*)iface_external.ifname);
+        free((void*)iface_external.name);
     }
+    
+    // Add cleanup for ndp interface
+    free((void*)iface_ndp.ifname);
+    free((void*)iface_ndp.name);
     
     free(copy);
 }
@@ -439,7 +455,7 @@ static void fuzz_ndp_solicit(const uint8_t *data, size_t size) {
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (size < 1) return 0;
     
-    fuzzer_init(); // Initialize components for fuzzing
+    fuzzer_init();
     
     uint8_t selector = data[0] % 5;
     const uint8_t *rdata = data + 1;
