@@ -246,6 +246,12 @@ static void init_path_info_fuzzed(struct path_info *pi, const uint8_t *data, siz
     
     // Fuzz physical path - allow path traversal attempts
     static char phys_buf[512];
+    // Fix: Check bounds before reading data[offset]
+    if (offset >= size) {
+        pi->phys = "/tmp/fuzz";
+        pi->query = "";
+        return;
+    }
     size_t phys_len = data[offset] % 200;
     offset++;
     if (offset + phys_len <= size) {
@@ -259,6 +265,11 @@ static void init_path_info_fuzzed(struct path_info *pi, const uint8_t *data, siz
     
     // Fuzz query string
     static char query_buf[1024];
+    // Fix: Check bounds before reading data[offset]
+    if (offset >= size) {
+        pi->query = "";
+        return;
+    }
     size_t query_len = data[offset] % 512;
     offset++;
     if (offset + query_len <= size) {
@@ -292,6 +303,8 @@ static void init_path_info_fuzzed(struct path_info *pi, const uint8_t *data, siz
             offset += path_len;
         }
         
+        // Fix: Check bounds before reading data[offset]
+        if (offset >= size) return;
         size_t ext_len = data[offset] % 8;
         offset++;
         if (offset + ext_len <= size) {
@@ -360,40 +373,33 @@ int LLVMFuzzerInitialize(int *argc, char ***argv) {
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
-    // Input validation - need at least 9 bytes (1 for test_selector + 8 for config)
-    if (size < 9 || size > 65536) return 0;  // Reasonable size limits
+    if (size < 9 || size > 65536) return 0;  
     if (!data) return 0;
     
-    // Additional pointer validation
     if ((void*)data == NULL || size == 0) return 0;
     
-    uint8_t test_selector = data[0] % 12; // More test cases
+    uint8_t test_selector = data[0] % 12; 
     const uint8_t *test_data = data + 1;
     size_t test_size = size - 1;
     
-    // Validate test_data pointer arithmetic
     if (test_size == 0 || test_data < data || 
         (void*)test_data >= (void*)(data + size)) {
         return 0;
     }
     
-    // Reset global state to prevent corruption
     reset_config_lists();
-    
-    // Vary configuration for each test
     fuzz_config_from_data(test_data, test_size);
     
     struct client cl;
     init_client(&cl, test_data, test_size);
     
-    // Validate client initialization succeeded
     if (cl.sfd.fd.fd < 0) {
         cleanup_client(&cl);
         return 0;
     }
     
     switch (test_selector) {
-        case 0: // Raw header parsing
+        case 0: 
             add_headers_to_client(&cl, test_data, test_size);
             break;
             
@@ -409,10 +415,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
                      for (size_t i = 0; i < test_size && url_pos < test_size; i++) {
                          char c = test_data[i];
                          // Allow reasonable URL characters
-                         if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || 
-                             (c >= '0' && c <= '9') || c == '/' || c == '.' || 
-                             c == '-' || c == '_' || c == '~' || c == '%' || 
-                             c == '?' || c == '&' || c == '=') {
+                         if (c != '\0' && c != '\n' && c != '\r' && c >= 0x20 && c <= 0x7E) {
                              url[url_pos++] = c;
                          }
                      }
