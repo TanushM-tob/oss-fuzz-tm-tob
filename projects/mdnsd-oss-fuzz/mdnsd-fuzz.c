@@ -292,12 +292,12 @@ static struct blob_attr* create_query_blob(uint8_t *data, size_t size) {
 static void fuzz_dns_handle_packet_comprehensive(uint8_t *input, size_t size) {
     cache_init();
     
-    // Enforce maximum packet size
+
     if (size > MAX_DNS_PACKET_SIZE) {
         size = MAX_DNS_PACKET_SIZE;
     }
     
-    if (size < 12) { // DNS header is 12 bytes minimum
+    if (size < 12) { 
         goto cleanup;
     }
     
@@ -326,6 +326,7 @@ static void fuzz_dns_handle_packet_comprehensive(uint8_t *input, size_t size) {
         } from;
         
         uint16_t port;
+        bool setup_ok = false;
         
         switch (port_config & 0x3) {
             case 0: port = MCAST_PORT; break;
@@ -338,57 +339,70 @@ static void fuzz_dns_handle_packet_comprehensive(uint8_t *input, size_t size) {
         switch (test_case) {
             case 0:
                 setup_ipv4_interface(&iface, SOCK_MC_IPV4);
+                if (!iface.addrs.v4) continue;
                 setup_ipv4_sockaddr(&from.v4, MCAST_PORT);
-                dns_handle_packet(&iface, (struct sockaddr *)&from.v4, MCAST_PORT, packet_data, packet_size);
+                setup_ok = true;
                 break;
                 
             case 1:
                 setup_ipv4_interface(&iface, SOCK_UC_IPV4);
+                if (!iface.addrs.v4) continue;
                 setup_ipv4_sockaddr(&from.v4, MCAST_PORT);
-                dns_handle_packet(&iface, (struct sockaddr *)&from.v4, MCAST_PORT, packet_data, packet_size);
+                setup_ok = true;
                 break;
                 
             case 2:
                 setup_ipv4_interface(&iface, SOCK_MC_IPV4);
+                if (!iface.addrs.v4) continue;
                 setup_ipv4_sockaddr(&from.v4, port);
-                dns_handle_packet(&iface, (struct sockaddr *)&from.v4, port, packet_data, packet_size);
+                setup_ok = true;
                 break;
                 
             case 3:
                 setup_ipv4_interface(&iface, SOCK_UC_IPV4);
+                if (!iface.addrs.v4) continue;
                 setup_ipv4_sockaddr(&from.v4, port);
-                dns_handle_packet(&iface, (struct sockaddr *)&from.v4, port, packet_data, packet_size);
+                setup_ok = true;
                 break;
                 
             case 4:
                 setup_ipv6_interface(&iface, SOCK_MC_IPV6);
+                if (!iface.addrs.v6) continue;
                 setup_ipv6_sockaddr(&from.v6, MCAST_PORT);
-                dns_handle_packet(&iface, (struct sockaddr *)&from.v6, MCAST_PORT, packet_data, packet_size);
+                setup_ok = true;
                 break;
                 
             case 5:
                 setup_ipv6_interface(&iface, SOCK_UC_IPV6);
+                if (!iface.addrs.v6) continue;
                 setup_ipv6_sockaddr(&from.v6, MCAST_PORT);
-                dns_handle_packet(&iface, (struct sockaddr *)&from.v6, MCAST_PORT, packet_data, packet_size);
+                setup_ok = true;
                 break;
                 
             case 6:
                 setup_ipv6_interface(&iface, SOCK_MC_IPV6);
+                if (!iface.addrs.v6) continue;
                 setup_ipv6_sockaddr(&from.v6, port);
-                dns_handle_packet(&iface, (struct sockaddr *)&from.v6, port, packet_data, packet_size);
+                setup_ok = true;
                 break;
                 
             case 7:
                 setup_ipv6_interface(&iface, SOCK_UC_IPV6);
+                if (!iface.addrs.v6) continue;
                 setup_ipv6_sockaddr(&from.v6, port);
-                dns_handle_packet(&iface, (struct sockaddr *)&from.v6, port, packet_data, packet_size);
+                setup_ok = true;
                 break;
         }
         
-        if (interface_ipv6(&iface)) {
-            free(iface.addrs.v6);
-        } else {
-            free(iface.addrs.v4);
+    
+        if (setup_ok) {
+            if (interface_ipv6(&iface)) {
+                dns_handle_packet(&iface, (struct sockaddr *)&from.v6, port, packet_data, packet_size);
+                free(iface.addrs.v6);
+            } else {
+                dns_handle_packet(&iface, (struct sockaddr *)&from.v4, port, packet_data, packet_size);
+                free(iface.addrs.v4);
+            }
         }
     }
     
