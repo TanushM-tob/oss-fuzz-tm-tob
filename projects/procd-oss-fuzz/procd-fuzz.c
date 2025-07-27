@@ -317,45 +317,45 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 }
 
 // AFL-specific code - only compile when not using libFuzzer
-#ifdef AFL_FUZZING
+// #ifdef AFL_FUZZING
 
-#ifndef __AFL_FUZZ_TESTCASE_LEN
+// #ifndef __AFL_FUZZ_TESTCASE_LEN
 
-ssize_t fuzz_len;
-unsigned char fuzz_buf[1024000];
+// ssize_t fuzz_len;
+// unsigned char fuzz_buf[1024000];
 
-#define __AFL_FUZZ_TESTCASE_LEN fuzz_len
-#define __AFL_FUZZ_TESTCASE_BUF fuzz_buf  
-#define __AFL_FUZZ_INIT() void sync(void);
-#define __AFL_LOOP(x) \
-    ((fuzz_len = read(0, fuzz_buf, sizeof(fuzz_buf))) > 0 ? 1 : 0)
-#define __AFL_INIT() sync()
+// #define __AFL_FUZZ_TESTCASE_LEN fuzz_len
+// #define __AFL_FUZZ_TESTCASE_BUF fuzz_buf  
+// #define __AFL_FUZZ_INIT() void sync(void);
+// #define __AFL_LOOP(x) \
+//     ((fuzz_len = read(0, fuzz_buf, sizeof(fuzz_buf))) > 0 ? 1 : 0)
+// #define __AFL_INIT() sync()
 
-#endif
+// #endif
 
-__AFL_FUZZ_INIT();
+// __AFL_FUZZ_INIT();
 
-#pragma clang optimize off
-#pragma GCC optimize("O0")
+// #pragma clang optimize off
+// #pragma GCC optimize("O0")
 
-int main(int argc, char **argv)
-{
-    (void)argc; (void)argv; 
+// int main(int argc, char **argv)
+// {
+//     (void)argc; (void)argv; 
     
-    ssize_t len;
-    unsigned char *buf;
+//     ssize_t len;
+//     unsigned char *buf;
 
-    __AFL_INIT();
-    buf = __AFL_FUZZ_TESTCASE_BUF;
-    while (__AFL_LOOP(INT_MAX)) {
-        len = __AFL_FUZZ_TESTCASE_LEN;
-        LLVMFuzzerTestOneInput(buf, (size_t)len);
-    }
+//     __AFL_INIT();
+//     buf = __AFL_FUZZ_TESTCASE_BUF;
+//     while (__AFL_LOOP(INT_MAX)) {
+//         len = __AFL_FUZZ_TESTCASE_LEN;
+//         LLVMFuzzerTestOneInput(buf, (size_t)len);
+//     }
     
-    return 0;
-}
+//     return 0;
+// }
 
-#endif /* AFL_FUZZING */
+// #endif /* AFL_FUZZING */
 
 // Minimal stubs for missing functionality
 char **environ = NULL;
